@@ -34,6 +34,9 @@ float altHoldGetClimbRateCmS(void);
 // Command an emergency descent at rateCmS; alt hold owns the throttle while it runs.
 void altHoldSetEmergencyDescent(bool active, float rateCmS);
 
+// The throttle stick is where alt hold reads it as holding height
+bool altHoldThrottleNearHover(void);
+
 bool altHoldUpdateCheck(timeUs_t currentTimeUs, timeDelta_t currentDeltaTimeUs);
 void updateAltHold(timeUs_t currentTimeUs);
 bool isAltHoldActive(void);

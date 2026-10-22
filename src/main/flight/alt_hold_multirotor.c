@@ -49,6 +49,7 @@
 // interval after which the task falls back to periodic scheduling, so that mode
 // entry and exit are still serviced.
 #define ALTHOLD_FALLBACK_PERIOD_US (2 * TASK_PERIOD_HZ(ALTHOLD_TASK_RATE_HZ))
+#define ALTHOLD_NEAR_HOVER_MIN_BAND 0.1f    // the throttle reads as at hover within this much of it, whatever the deadband
 
 typedef struct {
     bool isActive;
@@ -116,6 +117,18 @@ static void altHoldProcessTransitions(void) {
     }
 }
 
+bool altHoldThrottleNearHover(void)
+{
+    if (calculateThrottleStatus() == THROTTLE_LOW) {
+        return false;
+    }
+    const float band = fmaxf(altHold.deadband, ALTHOLD_NEAR_HOVER_MIN_BAND);
+    const float hoverThrottle = rcUsToThrottle(autopilotGetEffectiveHoverThrottlePwm());
+    const float rcThrottle = rcCommand[THROTTLE];
+    return rcThrottle >= hoverThrottle - band * hoverThrottle
+        && rcThrottle <= hoverThrottle + band * (1.0f - hoverThrottle);
+}
+
 static void altHoldUpdateTargetAltitude(timeUs_t taskIntervalUs)
 {
     // User can adjust the target altitude with throttle, but only when
@@ -125,7 +138,12 @@ static void altHoldUpdateTargetAltitude(timeUs_t taskIntervalUs)
 
     float stickFactor = 0.0f;
 
-    if (altHold.allowStickAdjustment && calculateThrottleStatus() != THROTTLE_LOW) {
+    bool stickAdjusts = altHold.allowStickAdjustment && calculateThrottleStatus() != THROTTLE_LOW;
+#ifdef USE_FENCE
+    // the fence took the aircraft with the stick wherever the pilot had it
+    stickAdjusts = stickAdjusts && !fenceHoldsThrottleStick();
+#endif
+    if (stickAdjusts) {
         const float rcThrottle = rcCommand[THROTTLE];
         const float hoverThrottle = rcUsToThrottle(autopilotGetEffectiveHoverThrottlePwm());
         const float lowThreshold = hoverThrottle - altHold.deadband * hoverThrottle;

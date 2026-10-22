@@ -66,7 +66,7 @@ static void posHoldCheckSticks(void)
 {
     bool sticksIgnored = failsafeIsActive() || FLIGHT_MODE(GPS_RESCUE_MODE);
 #ifdef USE_FENCE
-    sticksIgnored |= fenceOwnsPosition();
+    sticksIgnored |= fenceOwnsFlight();
 #endif
     if (sticksIgnored) {
         setSticksActiveStatus(false);

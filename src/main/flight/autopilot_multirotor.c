@@ -778,7 +778,7 @@ static void updateYawControl(float dt, const positionEstimate3d_t *est)
     const bool rescueYawActive = FLIGHT_MODE(GPS_RESCUE_MODE);
     bool navYawActive = FLIGHT_MODE(AUTOPILOT_MODE) && ap.navActive;
 #ifdef USE_FENCE
-    navYawActive |= fenceOwnsPosition() && ap.navActive;   // the fence's way back, flown nose first
+    navYawActive |= fenceOwnsFlight() && ap.navActive;   // the fence's way back, nose towards home
 #endif
     const bool holdYawActive = FLIGHT_MODE(POS_HOLD_MODE) || FLIGHT_MODE(MAG_MODE) || FLIGHT_MODE(AUTOPILOT_MODE);
 

@@ -253,23 +253,6 @@ void renderOsdWarning(char *warningText, bool *blinking, uint8_t *displayAttr)
         return;
     }
 
-#ifdef USE_FENCE
-    // The fence warnings follow the fence modes rather than an osd_warn setting: a limit
-    // that is set is always announced. First, the fence having taken the aircraft, and
-    // what hands it back.
-    const fenceWarning_e fenceWarning = fenceGetWarning();
-    if (fenceWarning == FENCE_WARNING_RETURNING) {
-        tfp_sprintf(warningText, "FENCE RETURN");
-        *displayAttr = DISPLAYPORT_SEVERITY_CRITICAL;
-        *blinking = true;
-        return;
-    }
-    if (fenceWarning == FENCE_WARNING_HOLDING) {
-        tfp_sprintf(warningText, "FENCE CENTER STICKS");
-        *displayAttr = DISPLAYPORT_SEVERITY_WARNING;
-        return;
-    }
-#endif
 
 #ifdef USE_ESC_SENSOR
     // Show warning if we lose motor output, the ESC is overheating or excessive current draw
@@ -380,7 +363,19 @@ void renderOsdWarning(char *warningText, bool *blinking, uint8_t *displayAttr)
     }
 
 #ifdef USE_FENCE
-    switch (fenceWarning) {
+    // The fence warnings follow the fence modes rather than an osd_warn setting: a limit that is
+    // set is always announced. They yield to the link and battery warnings, as a return can last a
+    // while; the flight mode element says the fence has the aircraft meanwhile.
+    switch (fenceGetWarning()) {
+    case FENCE_WARNING_RETURNING:
+        tfp_sprintf(warningText, "FENCE RETURN");
+        *displayAttr = DISPLAYPORT_SEVERITY_CRITICAL;
+        *blinking = true;
+        return;
+    case FENCE_WARNING_HOLDING:
+        tfp_sprintf(warningText, "FENCE CENTER STICKS");
+        *displayAttr = DISPLAYPORT_SEVERITY_WARNING;
+        return;
     case FENCE_WARNING_ALTITUDE_MAX:
         tfp_sprintf(warningText, "MAX ALTITUDE");
         *displayAttr = DISPLAYPORT_SEVERITY_CRITICAL;

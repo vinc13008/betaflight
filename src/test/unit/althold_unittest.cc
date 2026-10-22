@@ -178,6 +178,29 @@ TEST(AltholdUnittest, altHoldCapturesHoverThrottleWhenConfigZero)
     EXPECT_EQ(autopilotGetEffectiveHoverThrottlePwm(), AP_HOVER_THROTTLE_DEFAULT);
 }
 
+TEST_F(AltholdControlUnittest, ThrottleNearHoverIsTheDeadbandAroundHover)
+{
+    // hover 1500 us; a 10% deadband is widened to the 10% floor anyway
+    const float hover = rcUsToThrottle(1500);
+    testThrottleStatus = THROTTLE_HIGH;
+
+    rcCommand[THROTTLE] = hover;
+    EXPECT_TRUE(altHoldThrottleNearHover());
+    rcCommand[THROTTLE] = hover - 0.09f * hover;
+    EXPECT_TRUE(altHoldThrottleNearHover());
+    rcCommand[THROTTLE] = hover - 0.11f * hover;
+    EXPECT_FALSE(altHoldThrottleNearHover());
+    rcCommand[THROTTLE] = hover + 0.09f * (1.0f - hover);
+    EXPECT_TRUE(altHoldThrottleNearHover());
+    rcCommand[THROTTLE] = hover + 0.11f * (1.0f - hover);
+    EXPECT_FALSE(altHoldThrottleNearHover());
+
+    // a stick at the bottom is never at hover
+    rcCommand[THROTTLE] = hover;
+    testThrottleStatus = THROTTLE_LOW;
+    EXPECT_FALSE(altHoldThrottleNearHover());
+}
+
 TEST_F(AltholdControlUnittest, AltitudeControlRaisesThrottleWhenBelowTarget)
 {
     testAltitudeCm = 0.0f;

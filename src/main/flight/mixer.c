@@ -834,8 +834,15 @@ FAST_CODE_NOINLINE_CRITICAL void mixTable(timeUs_t currentTimeUs)
 
 #ifdef USE_FENCE
     // Last word on the throttle, whoever set it: eased across the fence taking the aircraft
-    // and handing it back, then capped under the altitude ceiling, which only ever lowers it
-    throttle = fenceLimitThrottle(fenceHandoverThrottle(throttle));
+    // and handing it back, then capped under the altitude ceiling, which only ever lowers it -
+    // but never against a yaw spin recovery, which needs the throttle it set
+    throttle = fenceHandoverThrottle(throttle);
+#ifdef USE_YAW_SPIN_RECOVERY
+    if (!yawSpinDetected)
+#endif
+    {
+        throttle = fenceLimitThrottle(throttle);
+    }
 #endif
 
 #if defined(USE_WING) && defined(USE_LAUNCH_WING)

@@ -37,8 +37,8 @@
 //
 // The radius is enforced by taking the aircraft as soon as it could no longer stop
 // inside it: position hold brakes it, leaning no further than the brake angle, flies it
-// back inside, and holds it there until the pilot centres the roll and pitch sticks,
-// which hands control back. The throttle is eased over to alt hold and back.
+// back inside nose towards home, and holds it there until the pilot centres the roll and
+// pitch sticks, which hands control back. The throttle is eased over to alt hold and back.
 
 typedef enum {
     FENCE_WARNING_NONE = 0,
@@ -61,6 +61,8 @@ void fenceUpdate(timeUs_t currentTimeUs);
 
 // Arming is refused while a limit is enforced but cannot be measured
 bool fenceIsReadyToArm(void);
+// Alt hold ignores the throttle stick: the fence has the aircraft and the stick has not been back to hover since
+bool fenceHoldsThrottleStick(void);
 
 // The throttle the flight modes settled on, eased across the fence taking the aircraft
 // (to alt hold's) and handing it back (to the pilot's) (mixer, every PID loop)
@@ -71,11 +73,10 @@ float fenceLimitThrottle(float throttle);
 // Returns true when it did.
 bool fenceConstrainAltitudeTarget(float *targetAltitudeCm);
 
-// Radius: the fence has taken the aircraft (angle, alt hold and pos hold are forced)
+// Radius: the fence has taken the aircraft: angle, alt hold and pos hold are forced, and the
+// pilot's roll and pitch are ignored until centring them hands it back
 bool fenceOwnsFlight(void);
-// Radius: the fence is braking or flying back, so the pilot's roll and pitch are ignored
-bool fenceOwnsPosition(void);
-// Radius: the steepest position hold may lean the aircraft while the fence brakes and flies it back,
+// Radius: the steepest position hold may lean the aircraft while the fence has it,
 // degrees, 0 = no limit of the fence's
 float fenceGetMaxAngleDeg(void);
 // Radius: the limit autopilot missions are held to as well, metres, 0 = none

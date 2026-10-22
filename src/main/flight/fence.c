@@ -38,6 +38,7 @@
 #include "fc/rc.h"
 #include "fc/runtime_config.h"
 
+#include "flight/alt_hold.h"
 #include "flight/autopilot.h"
 #include "flight/failsafe.h"
 #include "flight/flight_plan_nav.h"
@@ -70,6 +71,8 @@
 #define FENCE_ALT_RATE_I_DECAY          2.0f        // 1/s: the integral bleeds away once the pilot is below the cap again
 #define FENCE_ALT_TARGET_MARGIN_CM      200.0f      // autopilot altitude targets stay this far below the ceiling
 #define FENCE_ALT_CAP_LPF_HZ            10.0f       // smooths the cap's 100 Hz steps and the climb rate noise it follows
+#define FENCE_ALT_CAP_MIN_HOVER         0.5f        // the cap never goes below this much of hover: half a g of braking,
+                                                    // and the motors keep enough to hold the attitude without airmode
 
 // Throttle handover: the fence eases the throttle over to alt hold when it takes the aircraft,
 // and back to the pilot's stick when it hands it back, rather than stepping it
@@ -77,7 +80,9 @@
 #define FENCE_HANDBACK_TIME_S           1.0f
 
 // Radius
-#define FENCE_DIST_BRAKE_EFFICIENCY     0.5f        // of g * tan(brake angle), the deceleration the braking is counted on for
+#define FENCE_DIST_BRAKE_EFFICIENCY     0.7f        // of g * tan(brake angle), the deceleration the braking is counted on for
+#define FENCE_DIST_REACTION_TIME_S      0.75f       // flown on before braking bites: the decision, the modes switching over,
+                                                    // the aircraft rotating into the brake, and the position estimate's lag
 #define FENCE_DIST_RETURN_MARGIN_MIN_M  10          // the return point is at least this far inside the radius
 #define FENCE_DIST_STOPPED_SPEED_CMS    100.0f      // braking is over below this ground speed
 #define FENCE_DIST_BRAKING_TIMEOUT_US   5000000     // ...or after this long
@@ -88,6 +93,7 @@
 #define FENCE_DIST_STICK_DEADBAND_MIN   0.05f
 #define FENCE_DIST_RELEASE_DELAY_US     500000      // roll and pitch centred this long hand the aircraft back
 #define FENCE_DIST_ENGAGE_GRACE_US      500000      // position hold has this long to take the aircraft before it counts as failing
+#define FENCE_DIST_RETURN_YAW_RATE_DPS  90.0f       // the turn to face home, unhurried
 
 typedef enum {
     FENCE_RETURN_IDLE = 0,      // the pilot flies
@@ -122,6 +128,7 @@ typedef struct fenceState_s {
     fenceReturnState_e returnState;
     timeUs_t returnStateUs;
     timeUs_t engagedUs;             // when the fence last took the aircraft
+    bool throttleStickHeld;         // the throttle stick is ignored until brought back to hover since the fence took over
     bool sticksCentred;
     timeUs_t sticksCentredUs;
     bool returnUnavailable;         // the radius is enforced but the fence cannot fly the aircraft
@@ -157,11 +164,11 @@ STATIC_UNIT_TESTED float fenceAllowedClimbRateCmS(float altitudeCm, float ceilin
     return fminf(sqrtf(2.0f * FENCE_ALT_BRAKE_DECEL_CMSS * marginCm), marginCm * FENCE_ALT_POSITION_GAIN);
 }
 
-// How far from home the aircraft would come to rest if position hold braked it now at decelCmSS
+// How far from home the aircraft would come to rest if the fence took it now and braked it at decelCmSS
 STATIC_UNIT_TESTED float fenceStopDistanceCm(float distanceCm, float radialSpeedCmS, float decelCmSS)
 {
     const float outwardCmS = fmaxf(radialSpeedCmS, 0.0f);
-    return distanceCm + sq(outwardCmS) / (2.0f * decelCmSS);
+    return distanceCm + outwardCmS * FENCE_DIST_REACTION_TIME_S + sq(outwardCmS) / (2.0f * decelCmSS);
 }
 
 static float brakeAngleDeg(void)
@@ -222,7 +229,7 @@ static void updateCeiling(float dtS)
 
     const float hoverThrottle = scaleRangef(autopilotGetEffectiveHoverThrottlePwm(), MAX(rxConfig()->mincheck, PWM_RANGE_MIN), PWM_RANGE_MAX, 0.0f, 1.0f);
     const float cap = (hoverThrottle + rateErrorCmS * FENCE_ALT_RATE_GAIN + fence.throttleCapI) / fmaxf(cosTilt, 0.5f);
-    fence.throttleCap = constrainf(cap, 0.0f, 1.0f);
+    fence.throttleCap = constrainf(cap, FENCE_ALT_CAP_MIN_HOVER * hoverThrottle, 1.0f);
     fence.throttleCapActive = true;
 }
 
@@ -231,7 +238,10 @@ static void updateDistance(void)
     const positionEstimate3d_t *est = positionEstimatorGetEstimate();
     gpsLocation_t origin;
 
-    fence.distanceValid = STATE(GPS_FIX) && STATE(GPS_FIX_HOME) && est->isValidXY && positionEstimatorGetGpsOrigin(&origin);
+    // Optical flow alone dead-reckons the position, which drifts away from the home it is measured from
+    fence.distanceValid = STATE(GPS_FIX) && STATE(GPS_FIX_HOME) && est->isValidXY
+        && posHoldConfig()->positionSource != POSHOLD_SOURCE_OPTICALFLOW_ONLY
+        && positionEstimatorGetGpsOrigin(&origin);
     if (!fence.distanceValid) {
         return;
     }
@@ -259,16 +269,19 @@ static void releaseNavTarget(void)
     if (!fence.ownsNavTarget) {
         return;
     }
-    // A mission or rescue that has since taken the navigator keeps its own target
+    // A mission or rescue that has since taken the navigator keeps its own target and heading
     const positionNavCommand_t *cmd = positionNavGetActiveCommand();
-    if (cmd->active && cmd->sequence == fence.navSequence) {
+    const bool takenOver = cmd->active && cmd->sequence != fence.navSequence;
+    if (!takenOver) {
         positionNavClearTarget();
+        autopilotSetNavHeadingOverride(false, 0.0f);
+        autopilotSetYawRateLimit(0.0f);
     }
     fence.ownsNavTarget = false;
 }
 
-// Straight back towards home, to the return point on the line from home to the aircraft.
-// Altitude stays with alt hold, so the pilot keeps the throttle.
+// Straight back towards home, to the return point on the line from home to the aircraft, nose
+// first. Altitude stays with alt hold, so the pilot keeps the throttle.
 static void startReturnLeg(void)
 {
     const positionEstimate3d_t *est = positionEstimatorGetEstimate();
@@ -277,6 +290,9 @@ static void startReturnLeg(void)
     vector2Sub(&returnPointCm, (const vector2_t *)&est->position.v, &fence.homeEfCm);
     vector2Scale(&returnPointCm, &returnPointCm, returnRadiusCm(fenceConfig()) / fence.distanceCm);
     vector2Add(&returnPointCm, &returnPointCm, &fence.homeEfCm);
+
+    vector2_t wayBackCm;
+    vector2Sub(&wayBackCm, &returnPointCm, (const vector2_t *)&est->position.v);
 
     const vector3_t targetM = {.v = {
         [ENU_E] = returnPointCm.x * 0.01f,
@@ -287,16 +303,24 @@ static void startReturnLeg(void)
                            FENCE_DIST_ARRIVAL_SPEED_MPS, false, NULL, NULL);
     positionNavStartAfresh();
     positionNavSetSettleTimeout(FENCE_DIST_SETTLE_TIMEOUT_S);
-    autopilotSetNavHeadingOverride(false, 0.0f);   // nose follows the way back
+    // One heading for the whole leg, turned onto unhurriedly: a nose following the velocity would
+    // chase its own reversal
+    autopilotSetNavHeadingOverride(true, RADIANS_TO_DEGREES(atan2_approx(wayBackCm.x, wayBackCm.y)));
+    autopilotSetYawRateLimit(FENCE_DIST_RETURN_YAW_RATE_DPS);
 
     fence.navSequence = positionNavGetActiveCommand()->sequence;
     fence.ownsNavTarget = true;
 }
 
+// The pilot is ready to take the aircraft back: roll and pitch centred, throttle at hover so alt
+// hold's throttle hands over to a stick close to it, and the sticks are the pilot's, not a receiver's
+// failsafe values
 static bool sticksCentred(void)
 {
     const float deadband = fmaxf(posHoldConfig()->deadband * 0.01f, FENCE_DIST_STICK_DEADBAND_MIN);
-    return getRcDeflectionAbs(FD_ROLL) <= deadband && getRcDeflectionAbs(FD_PITCH) <= deadband;
+    return getRcDeflectionAbs(FD_ROLL) <= deadband && getRcDeflectionAbs(FD_PITCH) <= deadband
+        && altHoldThrottleNearHover()
+        && rxAreFlightChannelsValid();
 }
 
 static void updateReturn(timeUs_t currentTimeUs)
@@ -309,8 +333,8 @@ static void updateReturn(timeUs_t currentTimeUs)
     const bool deferred = failsafeIsActive()
         || FLIGHT_MODE(GPS_RESCUE_MODE | AUTOPILOT_MODE)
         || flightPlanNavIsRescueDescentActive();
-    // Position hold flies the return, with alt hold under it
-    const bool canFly = fence.distanceValid && fence.altitudeValid && posHoldReady();
+    // Position hold flies the return, with alt hold under it; reversible motors would read its throttle backwards
+    const bool canFly = fence.distanceValid && fence.altitudeValid && posHoldReady() && !featureIsEnabled(FEATURE_3D);
     const bool allowed = enforced && !deferred && canFly;
     const bool breach = fence.distanceValid && fenceStopDistanceCm(fence.distanceCm, fence.radialSpeedCmS, brakeDecelCmSS()) >= limitCm;
     // Position hold has been given the aircraft but is not flying it (its own sanity checks tripped)
@@ -331,10 +355,17 @@ static void updateReturn(timeUs_t currentTimeUs)
         fence.returnLockout = false;
     }
 
+    // Alt hold reads the stick as a climb rate: wherever the pilot had it when the fence took over is
+    // not one they chose, so it counts only once brought back to hover
+    if (fence.returnState == FENCE_RETURN_IDLE || altHoldThrottleNearHover()) {
+        fence.throttleStickHeld = false;
+    }
+
     switch (fence.returnState) {
     case FENCE_RETURN_IDLE:
         if (allowed && breach && !fence.returnLockout) {
             fence.engagedUs = currentTimeUs;
+            fence.throttleStickHeld = true;
             setReturnState(FENCE_RETURN_BRAKING, currentTimeUs);
         }
         break;
@@ -403,15 +434,33 @@ void fenceUpdate(timeUs_t currentTimeUs)
 bool fenceIsReadyToArm(void)
 {
     const fenceConfig_t *cfg = fenceConfig();
+    const bool altitudeEnforced = cfg->altitudeMode == FENCE_MODE_LIMIT;
+    const bool distanceEnforced = cfg->distanceMode == FENCE_MODE_LIMIT;
 
-    if (cfg->altitudeMode == FENCE_MODE_LIMIT && !isAltitudeAvailable()) {
+    // Neither limit can be enforced on reversible motors
+    if ((altitudeEnforced || distanceEnforced) && featureIsEnabled(FEATURE_3D)) {
         return false;
     }
-    // Home is taken with this many satellites (GPS_reset_home_position) and the radius is measured from it
-    if (cfg->distanceMode == FENCE_MODE_LIMIT && !(STATE(GPS_FIX) && gpsSol.numSat >= gpsRescueConfig()->minSats)) {
+    if (altitudeEnforced && !isAltitudeAvailable()) {
         return false;
+    }
+    if (distanceEnforced) {
+        // Home is taken with this many satellites (GPS_reset_home_position) and the radius is measured from it
+        if (!(STATE(GPS_FIX) && gpsSol.numSat >= gpsRescueConfig()->minSats)) {
+            return false;
+        }
+        // A home kept from an earlier arming (gps_set_home_point_once) is not moved to here: arming
+        // outside its radius would have the fence take the aircraft on the ground
+        if (STATE(GPS_FIX_HOME) && GPS_distanceToHomeCm > returnRadiusCm(cfg)) {
+            return false;
+        }
     }
     return true;
+}
+
+bool fenceHoldsThrottleStick(void)
+{
+    return fenceOwnsFlight() && fence.throttleStickHeld;
 }
 
 float fenceHandoverThrottle(float throttle)
@@ -473,14 +522,9 @@ bool fenceOwnsFlight(void)
     return fence.returnState != FENCE_RETURN_IDLE;
 }
 
-bool fenceOwnsPosition(void)
-{
-    return fence.returnState == FENCE_RETURN_BRAKING || fence.returnState == FENCE_RETURN_FLYING;
-}
-
 float fenceGetMaxAngleDeg(void)
 {
-    return fenceOwnsPosition() ? brakeAngleDeg() : 0.0f;
+    return fenceOwnsFlight() ? brakeAngleDeg() : 0.0f;
 }
 
 uint16_t fenceGetDistanceLimitM(void)
@@ -501,7 +545,8 @@ int fenceGetDistanceMarginM(void)
 fenceWarning_e fenceGetWarning(void)
 {
     if (!ARMING_FLAG(ARMED)) {
-        return FENCE_WARNING_NONE;
+        // what keeps it from arming, before the pilot tries to
+        return fenceIsReadyToArm() ? FENCE_WARNING_NONE : FENCE_WARNING_UNAVAILABLE;
     }
 
     switch (fence.returnState) {

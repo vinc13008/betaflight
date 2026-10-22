@@ -281,6 +281,7 @@ fence_unittest_SRC := \
 
 fence_unittest_DEFINES := \
 		USE_FENCE= \
+		USE_ALTITUDE_HOLD= \
 		USE_POSITION_HOLD=
 
 flight_failsafe_unittest_SRC := \

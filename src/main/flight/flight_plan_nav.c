@@ -1872,11 +1872,14 @@ static void checkGeofence(timeUs_t currentTimeUs)
 
     const autopilotConfig_t *cfg = autopilotConfig();
     uint16_t maxDistanceM = cfg->maxDistanceFromHomeM;
+    bool returnHome = cfg->geofenceAction == AP_GEOFENCE_RTH;
 #ifdef USE_FENCE
-    // A mission is held to the fence radius too, whichever is the tighter
+    // A mission is held to the fence radius too, whichever is the tighter, and brought back inside
+    // it as the fence would: landing where it breached would leave it outside
     const uint16_t fenceDistanceM = fenceGetDistanceLimitM();
     if (fenceDistanceM != 0 && (maxDistanceM == 0 || fenceDistanceM < maxDistanceM)) {
         maxDistanceM = fenceDistanceM;
+        returnHome = true;
     }
 #endif
     if (maxDistanceM == 0 || !STATE(GPS_FIX_HOME)) {
@@ -1886,7 +1889,7 @@ static void checkGeofence(timeUs_t currentTimeUs)
         return;
     }
 
-    if (cfg->geofenceAction == AP_GEOFENCE_RTH) {
+    if (returnHome) {
         injectReturnHomePlan(currentTimeUs);
     } else {
         startLandingInPlace(currentTimeUs);

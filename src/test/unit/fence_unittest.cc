@@ -67,6 +67,7 @@ extern "C" {
 
     gpsSolutionData_t gpsSol;
     gpsLocation_t GPS_home_llh;
+    uint32_t GPS_distanceToHomeCm;
 
     // altitude
     static bool mockAltitudeValid;
@@ -119,7 +120,15 @@ extern "C" {
     bool positionNavHasActiveTarget(void) { return mockNavCommand.active; }
     bool positionNavTargetReached(void) { return mockNavCommand.completed; }
     const positionNavCommand_t *positionNavGetActiveCommand(void) { return &mockNavCommand; }
-    void autopilotSetNavHeadingOverride(bool valid, float headingDeg) { UNUSED(valid); UNUSED(headingDeg); }
+    static float mockYawRateLimitDps;
+    void autopilotSetYawRateLimit(float rateLimitDps) { mockYawRateLimitDps = rateLimitDps; }
+    static bool mockHeadingOverrideValid;
+    static float mockHeadingOverrideDeg;
+    void autopilotSetNavHeadingOverride(bool valid, float headingDeg)
+    {
+        mockHeadingOverrideValid = valid;
+        mockHeadingOverrideDeg = headingDeg;
+    }
 
     // position hold, sticks, the rest of the aircraft
     static bool mockPosHoldReady;
@@ -130,6 +139,10 @@ extern "C" {
     bool isAutopilotInControl(void) { return mockAutopilotInControl; }
     bool failsafeIsActive(void) { return mockFailsafe; }
     float getRcDeflectionAbs(int axis) { return fabsf(mockStick[axis]); }
+    static bool mockThrottleNearHover;
+    static bool mockRxValid;
+    bool altHoldThrottleNearHover(void) { return mockThrottleNearHover; }
+    bool rxAreFlightChannelsValid(void) { return mockRxValid; }
 }
 
 #include "unittest_macros.h"
@@ -182,10 +195,15 @@ protected:
 
         memset(&mockNavCommand, 0, sizeof(mockNavCommand));
         mockNavTargetsSet = 0;
+        mockHeadingOverrideValid = false;
+        mockYawRateLimitDps = 0.0f;
         mockPosHoldReady = true;
         mockAutopilotInControl = true;
         mockFailsafe = false;
         mockStick[FD_ROLL] = mockStick[FD_PITCH] = mockStick[FD_YAW] = 0.0f;
+        mockThrottleNearHover = true;
+        mockRxValid = true;
+        GPS_distanceToHomeCm = 0;
 
         fenceConfigMutable()->altitudeMode = FENCE_MODE_OFF;
         fenceConfigMutable()->maxAltitudeM = 120;
@@ -193,11 +211,12 @@ protected:
         fenceConfigMutable()->distanceMode = FENCE_MODE_OFF;
         fenceConfigMutable()->maxDistanceM = 100;
         fenceConfigMutable()->distanceWarningM = 20;
-        fenceConfigMutable()->brakeAngleDeg = 30;   // braking counted on for 0.5 g tan 30 = 2.83 m/s^2
+        fenceConfigMutable()->brakeAngleDeg = 30;   // braking counted on for 0.7 g tan 30 = 3.96 m/s^2
 
         autopilotConfigMutable()->maxVelocity = 500;
         autopilotConfigMutable()->maxAngle = 50;
         posHoldConfigMutable()->deadband = 5;
+        posHoldConfigMutable()->positionSource = POSHOLD_SOURCE_AUTO;
         gpsRescueConfigMutable()->minSats = 8;
         rxConfigMutable()->mincheck = 1050;
 
@@ -209,6 +228,7 @@ protected:
         ENABLE_ARMING_FLAG(ARMED);
         ENABLE_STATE(GPS_FIX);
         ENABLE_STATE(GPS_FIX_HOME);
+        gpsSol.numSat = 12;
     }
 
     // east of the estimator origin, flying east (away from a home at the origin)
@@ -286,8 +306,8 @@ TEST_F(FenceTest, ClimbingIntoTheCeilingCapsTheThrottle)
     mockAltitudeCm = 11500.0f;      // 5 m below, allowed 5 m/s
     mockClimbRateCmS = 1500.0f;     // climbing at 15 m/s
     step();
-    const float capped = settledCap(1.0f);
-    EXPECT_LT(capped, 0.1f);
+    // cut to half of hover, and no further
+    EXPECT_NEAR(0.5f * (1300.0f - 1050.0f) / 950.0f, settledCap(1.0f), 0.001f);
     // the pilot can always throttle lower
     EXPECT_FLOAT_EQ(0.0f, fenceLimitThrottle(0.0f));
 }
@@ -364,8 +384,8 @@ TEST_F(FenceTest, ArmingNeedsWhatAnEnforcedLimitMeasuresWith)
 TEST_F(FenceTest, StopDistanceCountsOnlyOutwardSpeed)
 {
     EXPECT_FLOAT_EQ(5000.0f, fenceStopDistanceCm(5000.0f, -1000.0f, 400.0f));
-    // 10 m/s braking at 4 m/s^2 takes 12.5 m
-    EXPECT_FLOAT_EQ(6250.0f, fenceStopDistanceCm(5000.0f, 1000.0f, 400.0f));
+    // 10 m/s: 7.5 m flown before the brake bites, then 12.5 m braking at 4 m/s^2
+    EXPECT_FLOAT_EQ(7000.0f, fenceStopDistanceCm(5000.0f, 1000.0f, 400.0f));
 }
 
 TEST_F(FenceTest, WarnModeNeverTakesTheAircraft)
@@ -391,16 +411,15 @@ TEST_F(FenceTest, BreachIsCaughtBeforeTheRadius)
     EXPECT_EQ(FENCE_WARNING_DISTANCE_NEAR, fenceGetWarning());
     EXPECT_EQ(15, fenceGetDistanceMarginM());
 
-    // 7 m/s out, braking at 2.83 m/s^2, would carry it to 93.7 m: still fine
+    // 7 m/s out would carry it to 96.4 m: still fine
     placeEast(85.0f, 700.0f);
     step();
     EXPECT_FALSE(fenceOwnsFlight());
 
-    // 10 m/s out would carry it to 102.7 m
+    // 10 m/s out would carry it to 105.1 m
     placeEast(85.0f, 1000.0f);
     step();
     EXPECT_TRUE(fenceOwnsFlight());
-    EXPECT_TRUE(fenceOwnsPosition());
     EXPECT_EQ(FENCE_WARNING_RETURNING, fenceGetWarning());
 }
 
@@ -410,7 +429,7 @@ TEST_F(FenceTest, ReturnBrakesFliesBackHoldsAndHandsBack)
     fenceConfigMutable()->distanceMode = FENCE_MODE_LIMIT;
     placeEast(98.0f, 800.0f);
     step();
-    ASSERT_TRUE(fenceOwnsPosition());
+    ASSERT_EQ(FENCE_WARNING_RETURNING, fenceGetWarning());
     EXPECT_EQ(0, mockNavTargetsSet);         // braking first
 
     // stopped beyond the radius: flown back to the return point 20 m inside it, on the way home
@@ -420,21 +439,26 @@ TEST_F(FenceTest, ReturnBrakesFliesBackHoldsAndHandsBack)
     EXPECT_NEAR(80.0f, mockNavCommand.targetPosEfM.v[ENU_E], 0.01f);
     EXPECT_NEAR(0.0f, mockNavCommand.targetPosEfM.v[ENU_N], 0.01f);
     EXPECT_FALSE(mockNavCommand.includeAltitude);   // altitude stays with the pilot through alt hold
-    EXPECT_TRUE(fenceOwnsPosition());
+    // nose towards home, west, for the whole leg
+    EXPECT_TRUE(mockHeadingOverrideValid);
+    EXPECT_NEAR(-90.0f, mockHeadingOverrideDeg, 0.5f);
+    EXPECT_FLOAT_EQ(90.0f, mockYawRateLimitDps);    // turned onto unhurriedly
+    EXPECT_EQ(FENCE_WARNING_RETURNING, fenceGetWarning());
 
     // the pilot's sticks do nothing until it is back
     mockStick[FD_PITCH] = 0.5f;
     placeEast(90.0f, -500.0f);
     step();
-    EXPECT_TRUE(fenceOwnsPosition());
+    EXPECT_EQ(FENCE_WARNING_RETURNING, fenceGetWarning());
 
-    // arrived: position hold holds it, the pilot may fly it there
+    // arrived: position hold holds it there, the pilot's sticks still ignored
     mockNavCommand.completed = true;
     placeEast(80.0f, 0.0f);
     step();
     EXPECT_TRUE(fenceOwnsFlight());
-    EXPECT_FALSE(fenceOwnsPosition());
-    EXPECT_FALSE(mockNavCommand.active);    // the fence cleared its target
+    EXPECT_FALSE(mockNavCommand.active);    // the fence cleared its target...
+    EXPECT_FALSE(mockHeadingOverrideValid); // ...and its heading
+    EXPECT_FLOAT_EQ(0.0f, mockYawRateLimitDps);
     EXPECT_EQ(FENCE_WARNING_HOLDING, fenceGetWarning());
 
     // sticks deflected: held
@@ -458,18 +482,17 @@ TEST_F(FenceTest, BrakingShortOfTheReturnPointHoldsWhereItStopped)
 {
     arm();
     fenceConfigMutable()->distanceMode = FENCE_MODE_LIMIT;
-    placeEast(70.0f, 2000.0f);              // 20 m/s out would carry it to 120 m
+    placeEast(70.0f, 2000.0f);              // 20 m/s out would carry it to 135 m
     step();
-    ASSERT_TRUE(fenceOwnsPosition());
+    ASSERT_EQ(FENCE_WARNING_RETURNING, fenceGetWarning());
 
     placeEast(75.0f, 0.0f);                 // braked harder than counted on
     step();
     EXPECT_EQ(0, mockNavTargetsSet);
-    EXPECT_FALSE(fenceOwnsPosition());
     EXPECT_EQ(FENCE_WARNING_HOLDING, fenceGetWarning());
 }
 
-TEST_F(FenceTest, HoldingAndFlyingOutAgainIsCaught)
+TEST_F(FenceTest, DriftingOutWhileHeldIsCaught)
 {
     arm();
     fenceConfigMutable()->distanceMode = FENCE_MODE_LIMIT;
@@ -479,10 +502,10 @@ TEST_F(FenceTest, HoldingAndFlyingOutAgainIsCaught)
     step();
     ASSERT_EQ(FENCE_WARNING_HOLDING, fenceGetWarning());
 
-    mockStick[FD_PITCH] = 1.0f;
+    // blown out by the wind
     placeEast(97.0f, 500.0f);
     step();
-    EXPECT_TRUE(fenceOwnsPosition());
+    EXPECT_EQ(FENCE_WARNING_RETURNING, fenceGetWarning());
 }
 
 TEST_F(FenceTest, HomeAwayFromTheEstimatorOrigin)
@@ -493,7 +516,7 @@ TEST_F(FenceTest, HomeAwayFromTheEstimatorOrigin)
     mockEstimate.position.v[ENU_E] = 0.0f;
     mockEstimate.position.v[ENU_N] = 15500.0f;  // 105 m north of home
     step();
-    ASSERT_TRUE(fenceOwnsPosition());
+    ASSERT_EQ(FENCE_WARNING_RETURNING, fenceGetWarning());
     step();
     ASSERT_EQ(1, mockNavTargetsSet);
     EXPECT_NEAR(0.0f, mockNavCommand.targetPosEfM.v[ENU_E], 0.01f);
@@ -590,9 +613,9 @@ TEST_F(FenceTest, ReturnThatNeverArrivesHandsBack)
     placeEast(105.0f, 0.0f);
     step();
     step();
-    ASSERT_TRUE(fenceOwnsPosition());
+    ASSERT_EQ(FENCE_WARNING_RETURNING, fenceGetWarning());
     step(59000000);
-    EXPECT_TRUE(fenceOwnsPosition());
+    EXPECT_EQ(FENCE_WARNING_RETURNING, fenceGetWarning());
     step(2000000);
     EXPECT_FALSE(fenceOwnsFlight());
     EXPECT_FALSE(mockNavCommand.active);
@@ -665,7 +688,7 @@ TEST_F(FenceTest, BrakingLeansNoFurtherThanTheBrakeAngle)
 
     placeEast(105.0f, 0.0f);
     step();
-    ASSERT_TRUE(fenceOwnsPosition());
+    ASSERT_EQ(FENCE_WARNING_RETURNING, fenceGetWarning());
     EXPECT_FLOAT_EQ(30.0f, fenceGetMaxAngleDeg());
 
     // never past what position hold itself may lean
@@ -677,14 +700,14 @@ TEST_F(FenceTest, AGentlerBrakeAngleTakesTheAircraftEarlier)
 {
     arm();
     fenceConfigMutable()->distanceMode = FENCE_MODE_LIMIT;
-    fenceConfigMutable()->brakeAngleDeg = 50;   // 0.5 g tan 50 = 5.84 m/s^2
+    fenceConfigMutable()->brakeAngleDeg = 50;   // 0.7 g tan 50 = 8.18 m/s^2
 
-    // 10 m/s out from 85 m stops at 93.6 m braking hard
+    // 10 m/s out from 85 m stops at 98.6 m braking hard
     placeEast(85.0f, 1000.0f);
     step();
     EXPECT_FALSE(fenceOwnsFlight());
 
-    // but at 102.7 m braking at 30 degrees
+    // but at 105.1 m braking at 30 degrees
     fenceConfigMutable()->brakeAngleDeg = 30;
     step();
     EXPECT_TRUE(fenceOwnsFlight());
@@ -732,4 +755,114 @@ TEST_F(FenceTest, NoHandoverWhileDisarmed)
     EXPECT_FLOAT_EQ(0.2f, fenceHandoverThrottle(0.2f));
     arm();
     EXPECT_FLOAT_EQ(0.7f, fenceHandoverThrottle(0.7f));
+}
+
+// Throttle stick, handing back, arming
+
+TEST_F(FenceTest, ThrottleStickIgnoredUntilBroughtBackToHover)
+{
+    arm();
+    fenceConfigMutable()->distanceMode = FENCE_MODE_LIMIT;
+    mockThrottleNearHover = false;          // punching out as the fence takes over
+    placeEast(105.0f, 0.0f);
+    step();
+    ASSERT_TRUE(fenceOwnsFlight());
+    EXPECT_TRUE(fenceHoldsThrottleStick());
+    step();
+    EXPECT_TRUE(fenceHoldsThrottleStick());
+
+    mockThrottleNearHover = true;
+    step();
+    EXPECT_FALSE(fenceHoldsThrottleStick());
+
+    // from then on alt hold reads it as a climb rate
+    mockThrottleNearHover = false;
+    step();
+    EXPECT_FALSE(fenceHoldsThrottleStick());
+}
+
+TEST_F(FenceTest, HandedBackOnlyWithTheThrottleAtHover)
+{
+    arm();
+    fenceConfigMutable()->distanceMode = FENCE_MODE_LIMIT;
+    placeEast(98.0f, 800.0f);
+    step();
+    placeEast(80.0f, 0.0f);
+    step();
+    ASSERT_EQ(FENCE_WARNING_HOLDING, fenceGetWarning());
+
+    mockThrottleNearHover = false;          // throttle left down
+    for (int i = 0; i < 100; i++) {
+        step();
+    }
+    EXPECT_TRUE(fenceOwnsFlight());
+
+    mockThrottleNearHover = true;
+    for (int i = 0; i < 52; i++) {
+        step();
+    }
+    EXPECT_FALSE(fenceOwnsFlight());
+}
+
+TEST_F(FenceTest, NotHandedBackOnReceiverFailsafeValues)
+{
+    arm();
+    fenceConfigMutable()->distanceMode = FENCE_MODE_LIMIT;
+    placeEast(98.0f, 800.0f);
+    step();
+    placeEast(80.0f, 0.0f);
+    step();
+    ASSERT_EQ(FENCE_WARNING_HOLDING, fenceGetWarning());
+
+    mockRxValid = false;                    // link lost, sticks at their centred rxfail values
+    for (int i = 0; i < 100; i++) {
+        step();
+    }
+    EXPECT_TRUE(fenceOwnsFlight());
+}
+
+TEST_F(FenceTest, ArmingRefusedOutsideTheRadiusOfAKeptHome)
+{
+    fenceConfigMutable()->distanceMode = FENCE_MODE_LIMIT;
+    ENABLE_STATE(GPS_FIX);
+    gpsSol.numSat = 12;
+    EXPECT_TRUE(fenceIsReadyToArm());
+
+    // gps_set_home_point_once keeps an earlier home while disarmed
+    ENABLE_STATE(GPS_FIX_HOME);
+    GPS_distanceToHomeCm = 7000;
+    EXPECT_TRUE(fenceIsReadyToArm());
+    GPS_distanceToHomeCm = 9000;            // past the 80 m return point
+    EXPECT_FALSE(fenceIsReadyToArm());
+    EXPECT_EQ(FENCE_WARNING_UNAVAILABLE, fenceGetWarning());
+}
+
+TEST_F(FenceTest, NothingEnforcedOnReversibleMotors)
+{
+    mock3d = true;
+    EXPECT_TRUE(fenceIsReadyToArm());
+    fenceConfigMutable()->altitudeMode = FENCE_MODE_LIMIT;
+    EXPECT_FALSE(fenceIsReadyToArm());
+    fenceConfigMutable()->altitudeMode = FENCE_MODE_WARN;
+    fenceConfigMutable()->distanceMode = FENCE_MODE_LIMIT;
+    ENABLE_STATE(GPS_FIX);
+    gpsSol.numSat = 12;
+    EXPECT_FALSE(fenceIsReadyToArm());
+
+    // armed regardless (the setting changed in flight): not taken, and said so
+    arm();
+    placeEast(105.0f, 0.0f);
+    step();
+    EXPECT_FALSE(fenceOwnsFlight());
+}
+
+TEST_F(FenceTest, OpticalFlowAloneMeasuresNoDistance)
+{
+    arm();
+    fenceConfigMutable()->distanceMode = FENCE_MODE_LIMIT;
+    posHoldConfigMutable()->positionSource = POSHOLD_SOURCE_OPTICALFLOW_ONLY;
+    placeEast(105.0f, 0.0f);
+    step();
+    EXPECT_FALSE(fenceOwnsFlight());
+    EXPECT_EQ(FENCE_WARNING_UNAVAILABLE, fenceGetWarning());
 }
