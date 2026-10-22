@@ -85,6 +85,7 @@
 #include "fc/runtime_config.h"
 
 #include "flight/failsafe.h"
+#include "flight/fence.h"
 #include "flight/imu.h"
 #include "flight/mixer.h"
 #include "flight/pid.h"
@@ -1697,6 +1698,18 @@ case MSP_NAME:
         sbufWriteU16(dst, gpsRescueConfig()->yawP);
         break;
 #endif // !USE_WING
+#endif
+
+#ifdef USE_FENCE
+    case MSP_FENCE_CONFIG:
+        sbufWriteU8(dst, fenceConfig()->altitudeMode);
+        sbufWriteU16(dst, fenceConfig()->maxAltitudeM);
+        sbufWriteU8(dst, fenceConfig()->altitudeWarningM);
+        sbufWriteU8(dst, fenceConfig()->distanceMode);
+        sbufWriteU16(dst, fenceConfig()->maxDistanceM);
+        sbufWriteU8(dst, fenceConfig()->distanceWarningM);
+        sbufWriteU8(dst, fenceConfig()->brakeAngleDeg);
+        break;
 #endif
 #endif
 
@@ -3351,6 +3364,22 @@ RAM_CODE static mspResult_e mspProcessInCommand(mspDescriptor_t srcDesc, int16_t
         break;
 #endif // !USE_WING
 #endif
+#endif
+
+#ifdef USE_FENCE
+    case MSP_SET_FENCE_CONFIG:
+        // The limits are not changed in flight, nor from a truncated message
+        if (ARMING_FLAG(ARMED) || sbufBytesRemaining(src) < 9) {
+            return MSP_RESULT_ERROR;
+        }
+        fenceConfigMutable()->altitudeMode = sbufReadLookupIndex(src, TABLE_FENCE_MODE);
+        fenceConfigMutable()->maxAltitudeM = sbufReadU16Constrained(src, FENCE_ALTITUDE_MIN_M, FENCE_ALTITUDE_MAX_M);
+        fenceConfigMutable()->altitudeWarningM = sbufReadU8Constrained(src, 0, FENCE_WARNING_MARGIN_MAX_M);
+        fenceConfigMutable()->distanceMode = sbufReadLookupIndex(src, TABLE_FENCE_MODE);
+        fenceConfigMutable()->maxDistanceM = sbufReadU16Constrained(src, FENCE_DISTANCE_MIN_M, FENCE_DISTANCE_MAX_M);
+        fenceConfigMutable()->distanceWarningM = sbufReadU8Constrained(src, 0, FENCE_WARNING_MARGIN_MAX_M);
+        fenceConfigMutable()->brakeAngleDeg = sbufReadU8Constrained(src, FENCE_BRAKE_ANGLE_MIN_DEG, FENCE_BRAKE_ANGLE_MAX_DEG);
+        break;
 #endif
 
     case MSP_SET_MOTOR:

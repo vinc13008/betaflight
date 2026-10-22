@@ -213,6 +213,9 @@
 #define MSP_CALCULATE_SIMPLIFIED_DTERM  144  // out message: Calculate D term filter values based on sliders without saving
 #define MSP_VALIDATE_SIMPLIFIED_TUNING  145  // out message: Returns array of true/false showing which simplified tuning groups match values
 
+// Flight envelope fence (this fork; ids chosen from the unused ones, not allocated upstream)
+#define MSP_FENCE_CONFIG                146  // out message: Fence altitude and distance modes, limits, warning margins, brake angle
+
 // Additional non-MultiWii commands (150-166)
 #define MSP_STATUS_EX                   150  // out message: Cycletime, errors_count, CPU load, sensor present etc
 #define MSP_UID                         160  // out message: Unique device ID
@@ -264,6 +267,7 @@
 
 // Multiple MSP and special commands (230-255)
 #define MSP_MULTIPLE_MSP                230  // out message: Request multiple MSPs in one request
+#define MSP_SET_FENCE_CONFIG            236  // in message:  Set the fence configuration (refused while armed)
 #define MSP_MODE_RANGES_EXTRA           238  // out message: Extra mode range data
 #define MSP_SET_ACC_TRIM                239  // in message:  Set acc angle trim values
 #define MSP_ACC_TRIM                    240  // out message: Get acc angle trim values
