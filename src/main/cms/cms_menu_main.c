@@ -36,6 +36,7 @@
 #include "cms/cms_menu_imu.h"
 #include "cms/cms_menu_blackbox.h"
 #include "cms/cms_menu_failsafe.h"
+#include "cms/cms_menu_fence.h"
 #include "cms/cms_menu_firmware.h"
 #include "cms/cms_menu_ledstrip.h"
 #include "cms/cms_menu_misc.h"
@@ -87,6 +88,9 @@ static const OSD_Entry menuFeaturesEntries[] =
 {
     {"--- FEATURES ---", OME_Label, NULL, NULL},
 
+#ifdef USE_FENCE
+    {"FENCE", OME_Submenu, cmsMenuChange, &cmsx_menuFence},
+#endif
 #if defined(USE_BLACKBOX)
     {"BLACKBOX", OME_Submenu, cmsMenuChange, &cmsx_menuBlackbox},
 #endif

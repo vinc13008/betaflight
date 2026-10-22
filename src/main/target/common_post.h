@@ -874,6 +874,13 @@ extern struct linker_symbol __fontdata_end;
 #undef USE_CMS_GPS_RESCUE_MENU
 #endif
 
+// Flight envelope fence (altitude ceiling, distance from home), multirotor only: the
+// ceiling caps the throttle and the altitude targets, the radius flies the aircraft
+// back through position hold. Placed after the hold modes are derived.
+#if !defined(USE_WING) && defined(USE_ACC) && defined(USE_GPS) && defined(USE_ALTITUDE_HOLD) && defined(USE_POSITION_HOLD) && !defined(USE_FENCE)
+#define USE_FENCE
+#endif
+
 /*****************************************************
 
  Place any ENABLE_X_FEATURE=0 definitions here for those

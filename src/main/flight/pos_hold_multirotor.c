@@ -31,6 +31,7 @@
 #include "fc/rc.h"
 #include "flight/autopilot.h"
 #include "flight/failsafe.h"
+#include "flight/fence.h"
 #include "flight/imu.h"
 #include "flight/position.h"
 #include "flight/position_estimator.h"
@@ -63,7 +64,11 @@ void posHoldInit(void)
 
 static void posHoldCheckSticks(void)
 {
-    if (failsafeIsActive() || FLIGHT_MODE(GPS_RESCUE_MODE)) {
+    bool sticksIgnored = failsafeIsActive() || FLIGHT_MODE(GPS_RESCUE_MODE);
+#ifdef USE_FENCE
+    sticksIgnored |= fenceOwnsPosition();
+#endif
+    if (sticksIgnored) {
         setSticksActiveStatus(false);
         return;
     }

@@ -1621,6 +1621,81 @@ def scenario_geofence_rth_rxloss(sitl, rc, fdm):
     log(f"landed {dist:.1f} m from home under failsafe")
 
 
+# --- flight envelope fence ------------------------------------------------
+# The pilot flies (ANGLE, no autopilot): the fence alone must keep the aircraft
+# inside its radius and under its ceiling.
+
+FENCE_DIST_M = 60
+FENCE_ALT_M = 20
+
+
+def scenario_fence_distance(sitl, rc, fdm):
+    """Flying out in ANGLE with the stick held, the fence takes the aircraft
+    before the radius, flies it back inside while the stick is ignored, and
+    hands it back once the sticks are centred."""
+    boot_and_arm(sitl, rc, fdm)
+    rc.set(2, 1600)     # climb clear of the ground
+    time.sleep(3.0)
+    rc.set(2, 1450)     # a slight climb with the forward tilt
+    rc.set(1, 1800)     # pitch forward: out to the north
+
+    wait_for(
+        "fence takes the aircraft (ALTHOLD + POSHOLD forced)",
+        lambda: {BOX_ALTHOLD, BOX_POSHOLD} <= sitl.modes(),
+        timeout=60,
+    )
+    engaged_m = fdm.distance_from_home()
+    log(f"fence engaged {engaged_m:.1f} m out, debug {sitl.debug_values()[:4]}")
+    assert engaged_m < FENCE_DIST_M, f"fence engaged only {engaged_m:.1f} m out"
+    rc.set(2, 1300)     # throttle back into the alt-hold deadband
+
+    # the stick is still held forward: the return ignores it
+    wait_for(
+        "flown back inside the return point",
+        lambda: fdm.distance_from_home() < FENCE_DIST_M - 8,
+        timeout=60,
+        interval=0.5,
+    )
+    rc.set(1, RC_MID)   # centre the sticks: the pilot takes it back
+    wait_for(
+        "handed back (POSHOLD released)",
+        lambda: BOX_POSHOLD not in sitl.modes(),
+        timeout=30,
+        interval=0.5,
+    )
+    peak_m = max(math.hypot(s[1], s[2]) for s in fdm.snapshot_history())
+    log(f"furthest out {peak_m:.1f} m against a {FENCE_DIST_M} m radius")
+    assert peak_m < FENCE_DIST_M + 5, f"flew {peak_m:.1f} m out against a {FENCE_DIST_M} m radius"
+    assert BOX_ARM in sitl.modes(), "disarmed during the return"
+
+
+def scenario_fence_altitude(sitl, rc, fdm):
+    """Full throttle in ANGLE: the ceiling caps the climb and holds the
+    aircraft under it, and the pilot can still throttle down."""
+    boot_and_arm(sitl, rc, fdm)
+    rc.set(2, RC_HIGH)
+    wait_for(
+        "climbs up to the ceiling",
+        lambda: fdm.model.pos[2] > FENCE_ALT_M - 3,
+        timeout=40,
+        interval=0.5,
+    )
+    time.sleep(10.0)    # full throttle held against the ceiling
+    peak_m = fdm.max_altitude()
+    held_m = fdm.model.pos[2]
+    log(f"peak {peak_m:.1f} m, holding {held_m:.1f} m against a {FENCE_ALT_M} m ceiling, debug {sitl.debug_values()[4:8]}")
+    assert peak_m < FENCE_ALT_M + 1.5, f"climbed to {peak_m:.1f} m against a {FENCE_ALT_M} m ceiling"
+    assert held_m > FENCE_ALT_M - 3, f"sagged to {held_m:.1f} m under a {FENCE_ALT_M} m ceiling"
+
+    rc.set(2, 1150)
+    wait_for(
+        "descends when throttled down",
+        lambda: fdm.model.pos[2] < FENCE_ALT_M - 6,
+        timeout=30,
+        interval=0.5,
+    )
+
+
 # --- GPS rescue scenarios -------------------------------------------------
 # GPS rescue is flown as an autopilot mission (ENABLE_RESCUE_PLAN, now the
 # default on flight-plan targets): on RC loss the failsafe procedure stages a
@@ -3663,6 +3738,23 @@ SCENARIOS = {
             "set ap_waypoint_hold_radius = 400",
             "set ap_landing_descent_rate = 200",
             "set landing_disarm_threshold = 10",
+        ],
+    ),
+    "fence_distance": (
+        scenario_fence_distance,
+        [
+            "set debug_mode = FENCE",
+            "set fence_dist_mode = LIMIT",
+            f"set fence_dist_max = {FENCE_DIST_M}",
+            "set fence_dist_warning = 10",
+        ],
+    ),
+    "fence_altitude": (
+        scenario_fence_altitude,
+        [
+            "set debug_mode = FENCE",
+            "set fence_alt_mode = LIMIT",
+            f"set fence_alt_max = {FENCE_ALT_M}",
         ],
     ),
     "geofence_rth_rxloss": (

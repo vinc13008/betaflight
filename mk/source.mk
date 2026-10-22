@@ -16,6 +16,7 @@ PG_SRC = \
             pg/dronecan_dna.c \
             pg/displayport_profiles.c \
             pg/dyn_notch.c \
+            pg/fence.c \
             pg/flash.c \
             pg/flight_plan.c \
             pg/gimbal.c \
@@ -173,6 +174,7 @@ COMMON_SRC = \
             flight/autopilot_wing.c \
             flight/dyn_notch_filter.c \
             flight/failsafe.c \
+            flight/fence.c \
             flight/flight_plan_capture.c \
             flight/flight_plan_nav.c \
             flight/flight_plan_nav_wing.c \
@@ -237,6 +239,7 @@ COMMON_SRC = \
             cms/cms.c \
             cms/cms_menu_blackbox.c \
             cms/cms_menu_failsafe.c \
+            cms/cms_menu_fence.c \
             cms/cms_menu_firmware.c \
             cms/cms_menu_gps_rescue_multirotor.c \
             cms/cms_menu_gps_rescue_wing.c \
@@ -541,6 +544,7 @@ SIZE_OPTIMISED_SRC += \
             cms/cms.c \
             cms/cms_menu_blackbox.c \
             cms/cms_menu_failsafe.c \
+            cms/cms_menu_fence.c \
             cms/cms_menu_firmware.c \
             cms/cms_menu_gps_rescue_multirotor.c \
             cms/cms_menu_gps_rescue_wing.c \

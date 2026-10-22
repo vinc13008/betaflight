@@ -41,6 +41,7 @@
 
 #include "flight/autopilot.h"
 #include "flight/failsafe.h"
+#include "flight/fence.h"
 #include "flight/imu.h"
 #include "flight/pid.h"
 #include "flight/position.h"
@@ -499,6 +500,10 @@ void initRescueValues(void)
                 break;
         }
     }
+#ifdef USE_FENCE
+    // a climb the ceiling stops short of would read as an altitude control failure
+    fenceConstrainAltitudeTarget(&rescueState.intent.returnAltitudeCm);
+#endif
     rescueState.intent.targetAltitudeCm = rescueState.sensor.currentAltitudeCm;  // Initial target altitude is current filtered altitude
     autopilotSetYawTarget(DECIDEGREES_TO_DEGREES(attitude.values.yaw));
     rescueState.intent.targetAltitudeVelCmS = 0.0f;

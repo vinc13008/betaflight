@@ -46,6 +46,7 @@
 #include "fc/runtime_config.h"
 
 #include "flight/failsafe.h"
+#include "flight/fence.h"
 #include "flight/gps_rescue.h"
 #include "flight/imu.h"
 #include "flight/landing_wing.h"
@@ -252,6 +253,24 @@ void renderOsdWarning(char *warningText, bool *blinking, uint8_t *displayAttr)
         return;
     }
 
+#ifdef USE_FENCE
+    // The fence warnings follow the fence modes rather than an osd_warn setting: a limit
+    // that is set is always announced. First, the fence having taken the aircraft, and
+    // what hands it back.
+    const fenceWarning_e fenceWarning = fenceGetWarning();
+    if (fenceWarning == FENCE_WARNING_RETURNING) {
+        tfp_sprintf(warningText, "FENCE RETURN");
+        *displayAttr = DISPLAYPORT_SEVERITY_CRITICAL;
+        *blinking = true;
+        return;
+    }
+    if (fenceWarning == FENCE_WARNING_HOLDING) {
+        tfp_sprintf(warningText, "FENCE CENTER STICKS");
+        *displayAttr = DISPLAYPORT_SEVERITY_WARNING;
+        return;
+    }
+#endif
+
 #ifdef USE_ESC_SENSOR
     // Show warning if we lose motor output, the ESC is overheating or excessive current draw
     if (featureIsEnabled(FEATURE_ESC_SENSOR) && osdWarnGetState(OSD_WARNING_ESC_FAIL) && ARMING_FLAG(ARMED)) {
@@ -359,6 +378,35 @@ void renderOsdWarning(char *warningText, bool *blinking, uint8_t *displayAttr)
         *blinking = true;
         return;
     }
+
+#ifdef USE_FENCE
+    switch (fenceWarning) {
+    case FENCE_WARNING_ALTITUDE_MAX:
+        tfp_sprintf(warningText, "MAX ALTITUDE");
+        *displayAttr = DISPLAYPORT_SEVERITY_CRITICAL;
+        *blinking = true;
+        return;
+    case FENCE_WARNING_DISTANCE_MAX:
+        tfp_sprintf(warningText, "MAX DISTANCE");
+        *displayAttr = DISPLAYPORT_SEVERITY_CRITICAL;
+        *blinking = true;
+        return;
+    case FENCE_WARNING_UNAVAILABLE:
+        tfp_sprintf(warningText, "FENCE N/A");
+        *displayAttr = DISPLAYPORT_SEVERITY_WARNING;
+        return;
+    case FENCE_WARNING_ALTITUDE_NEAR:
+        tfp_sprintf(warningText, "ALT LIMIT %d%c", (int)lrintf(osdGetMetersToSelectedUnit(fenceGetAltitudeMarginM())), osdGetMetersToSelectedUnitSymbol());
+        *displayAttr = DISPLAYPORT_SEVERITY_WARNING;
+        return;
+    case FENCE_WARNING_DISTANCE_NEAR:
+        tfp_sprintf(warningText, "DIST LIMIT %d%c", (int)lrintf(osdGetMetersToSelectedUnit(fenceGetDistanceMarginM())), osdGetMetersToSelectedUnitSymbol());
+        *displayAttr = DISPLAYPORT_SEVERITY_WARNING;
+        return;
+    default:
+        break;
+    }
+#endif
 
 #ifdef USE_GPS_RESCUE
     if (osdWarnGetState(OSD_WARNING_GPS_RESCUE_UNAVAILABLE)

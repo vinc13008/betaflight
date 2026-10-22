@@ -55,6 +55,7 @@
 #include "fc/runtime_config.h"
 
 #include "flight/alt_hold.h"
+#include "flight/fence.h"
 #include "flight/gps_rescue.h"
 #include "flight/imu.h"
 #include "flight/mixer.h"
@@ -310,8 +311,13 @@ static void taskUpdateMag(timeUs_t currentTimeUs)
 #if defined(USE_BARO) || defined(USE_GPS) || defined(USE_RANGEFINDER) || defined(USE_OPTICALFLOW)
 static void taskPositionUpdate(timeUs_t currentTimeUs)
 {
-    UNUSED(currentTimeUs);
     positionUpdate();
+#ifdef USE_FENCE
+    // Ahead of the hold modes this estimate schedules, so they fly what the fence decided on it
+    fenceUpdate(currentTimeUs);
+#else
+    UNUSED(currentTimeUs);
+#endif
 }
 #endif // USE_BARO || USE_GPS || USE_RANGEFINDER || USE_OPTICALFLOW
 

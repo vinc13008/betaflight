@@ -64,6 +64,7 @@
 #include "flight/launch_wing.h"
 #include "flight/gps_rescue.h"
 #include "flight/alt_hold.h"
+#include "flight/fence.h"
 #include "flight/pos_hold.h"
 
 #if ENABLE_FLIGHT_PLAN && !defined(USE_WING)
@@ -236,6 +237,16 @@ MAYBE_UNUSED static inline bool rescueDescentCircles(void)
     return false;
 }
 #endif
+
+// The fence is bringing the aircraft back inside its radius: it flies in angle, alt hold and pos hold
+MAYBE_UNUSED static inline bool fenceHoldsAircraft(void)
+{
+#ifdef USE_FENCE
+    return fenceOwnsFlight();
+#else
+    return false;
+#endif
+}
 
 #ifdef USE_LAUNCH_CONTROL
 static launchControlState_e launchControlState = LAUNCH_CONTROL_DISABLED;
@@ -483,19 +494,30 @@ if (crashFlipModeActive) {
             }
         }
 
+#if defined(USE_GPS_RESCUE) || defined(USE_FENCE)
+        // GPS rescue and the fence both need the GPS before arming; neither may clear what the other set
+        bool gpsNotReady = false;
 #ifdef USE_GPS_RESCUE
         if (gpsRescueIsConfigured()) {
-            if (gpsRescueConfig()->allowArmingWithoutFix || (STATE(GPS_FIX) && (gpsSol.numSat >= gpsRescueConfig()->minSats)) ||
-            ARMING_FLAG(WAS_EVER_ARMED) || IS_RC_MODE_ACTIVE(BOXCRASHFLIP)) {
-                unsetArmingDisabled(ARMING_DISABLED_GPS);
-            } else {
-                setArmingDisabled(ARMING_DISABLED_GPS);
-            }
+            gpsNotReady = !(gpsRescueConfig()->allowArmingWithoutFix || (STATE(GPS_FIX) && (gpsSol.numSat >= gpsRescueConfig()->minSats)) ||
+            ARMING_FLAG(WAS_EVER_ARMED) || IS_RC_MODE_ACTIVE(BOXCRASHFLIP));
             if (IS_RC_MODE_ACTIVE(BOXGPSRESCUE)) {
                 setArmingDisabled(ARMING_DISABLED_RESC);
             } else {
                 unsetArmingDisabled(ARMING_DISABLED_RESC);
             }
+        }
+#endif
+#ifdef USE_FENCE
+        // An enforced limit needs its sensors at every arming; only turtle mode is let through
+        if (!fenceIsReadyToArm() && !IS_RC_MODE_ACTIVE(BOXCRASHFLIP)) {
+            gpsNotReady = true;
+        }
+#endif
+        if (gpsNotReady) {
+            setArmingDisabled(ARMING_DISABLED_GPS);
+        } else {
+            unsetArmingDisabled(ARMING_DISABLED_GPS);
         }
 #endif
 
@@ -1106,6 +1128,7 @@ void processRxModes(timeUs_t currentTimeUs)
     bool canUseHorizonMode = true;
     if ((IS_RC_MODE_ACTIVE(BOXANGLE)
         || failsafeIsActive()
+        || fenceHoldsAircraft()
 #ifdef USE_ALTITUDE_HOLD
         || FLIGHT_MODE(ALT_HOLD_MODE)
 #endif
@@ -1278,7 +1301,8 @@ void processRxModes(timeUs_t currentTimeUs)
         && !launchWingAwaitingThrow()
         // and either the alt_hold switch is activated, or are in failsafe landing mode,
         // or an autopilot mission needs altitude control, or a switch-rescue fallback descent
-        && ((altHoldSelected() && !launchWingHoldWaits()) || failsafeIsActive() || FLIGHT_MODE(AUTOPILOT_MODE) || flightPlanNavIsRescueDescentActive())
+        && ((altHoldSelected() && !launchWingHoldWaits()) || failsafeIsActive() || FLIGHT_MODE(AUTOPILOT_MODE) || flightPlanNavIsRescueDescentActive()
+            || fenceHoldsAircraft())
         // and we have Acc for self-levelling
         && sensors(SENSOR_ACC)
         // and this platform actually has an altitude control law
@@ -1304,7 +1328,7 @@ void processRxModes(timeUs_t currentTimeUs)
         // and either the pos_hold switch is activated, or are in failsafe landing mode,
         // or an autopilot mission needs the position controller
         && ((IS_RC_MODE_ACTIVE(BOXPOSHOLD) && !launchWingHoldWaits()) || failsafeIsActive() || FLIGHT_MODE(AUTOPILOT_MODE)
-            || rescueDescentCircles())
+            || rescueDescentCircles() || fenceHoldsAircraft())
         // and altitude hold is flying, on a platform that needs it to hold a position
         && posHoldHasAltHold()
         // and we have Acc for self-levelling

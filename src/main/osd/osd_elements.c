@@ -158,6 +158,7 @@
 #include "fc/rc_controls.h"
 #include "fc/runtime_config.h"
 
+#include "flight/fence.h"
 #include "flight/flight_plan_nav.h"
 #include "flight/gps_rescue.h"
 #include "flight/position.h"
@@ -1180,6 +1181,10 @@ static void osdElementFlymode(osdElementParms_t *element)
         strcpy(element->buff, "!FS!");
     } else if (FLIGHT_MODE(GPS_RESCUE_MODE)) {
         strcpy(element->buff, "RESC");
+#ifdef USE_FENCE
+    } else if (fenceOwnsFlight()) {
+        strcpy(element->buff, "FNCE");
+#endif
     } else if (FLIGHT_MODE(HEADFREE_MODE)) {
         strcpy(element->buff, "HEAD");
     } else if (FLIGHT_MODE(PASSTHRU_MODE)) {

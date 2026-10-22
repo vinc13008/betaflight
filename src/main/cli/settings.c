@@ -58,6 +58,7 @@
 #include "fc/rc_controls.h"
 
 #include "flight/failsafe.h"
+#include "flight/fence.h"
 #include "flight/gps_rescue.h"
 #include "flight/imu.h"
 #include "flight/mixer.h"
@@ -223,6 +224,12 @@ static const char * const lookupTableApRxLossPolicy[] = {
 
 static const char * const lookupTableApGeofenceAction[] = {
     "LAND", "RTH"
+};
+#endif
+
+#ifdef USE_FENCE
+static const char * const lookupTableFenceMode[] = {
+    "OFF", "WARN", "LIMIT"
 };
 #endif
 
@@ -630,6 +637,9 @@ const lookupTableEntry_t lookupTables[] = {
 #if !defined(USE_WING) || ENABLE_FLIGHT_PLAN
     LOOKUP_TABLE_ENTRY(lookupTableApRxLossPolicy),
     LOOKUP_TABLE_ENTRY(lookupTableApGeofenceAction),
+#endif
+#ifdef USE_FENCE
+    LOOKUP_TABLE_ENTRY(lookupTableFenceMode),
 #endif
 #ifdef USE_GPS_RESCUE
     LOOKUP_TABLE_ENTRY(lookupTableRescueSanityType),
@@ -2251,6 +2261,16 @@ const clivalue_t valueTable[] = {
     { PARAM_NAME_AP_MAX_DISTANCE_FROM_HOME,  VAR_UINT16 | MASTER_VALUE, .config.minmaxUnsigned = { 0, 10000 }, PG_AUTOPILOT, offsetof(autopilotConfig_t, maxDistanceFromHomeM) },
     { PARAM_NAME_AP_GEOFENCE_ACTION,         VAR_UINT8  | MASTER_VALUE | MODE_LOOKUP, .config.lookup = { TABLE_AP_GEOFENCE_ACTION }, PG_AUTOPILOT, offsetof(autopilotConfig_t, geofenceAction) },
 #endif // ENABLE_FLIGHT_PLAN
+
+// PG_FENCE_CONFIG
+#ifdef USE_FENCE
+    { PARAM_NAME_FENCE_ALT_MODE,     VAR_UINT8  | MASTER_VALUE | MODE_LOOKUP, .config.lookup = { TABLE_FENCE_MODE }, PG_FENCE_CONFIG, offsetof(fenceConfig_t, altitudeMode) },
+    { PARAM_NAME_FENCE_ALT_MAX,      VAR_UINT16 | MASTER_VALUE, .config.minmaxUnsigned = { FENCE_ALTITUDE_MIN_M, FENCE_ALTITUDE_MAX_M }, PG_FENCE_CONFIG, offsetof(fenceConfig_t, maxAltitudeM) },
+    { PARAM_NAME_FENCE_ALT_WARNING,  VAR_UINT8  | MASTER_VALUE, .config.minmaxUnsigned = { 0, FENCE_WARNING_MARGIN_MAX_M }, PG_FENCE_CONFIG, offsetof(fenceConfig_t, altitudeWarningM) },
+    { PARAM_NAME_FENCE_DIST_MODE,    VAR_UINT8  | MASTER_VALUE | MODE_LOOKUP, .config.lookup = { TABLE_FENCE_MODE }, PG_FENCE_CONFIG, offsetof(fenceConfig_t, distanceMode) },
+    { PARAM_NAME_FENCE_DIST_MAX,     VAR_UINT16 | MASTER_VALUE, .config.minmaxUnsigned = { FENCE_DISTANCE_MIN_M, FENCE_DISTANCE_MAX_M }, PG_FENCE_CONFIG, offsetof(fenceConfig_t, maxDistanceM) },
+    { PARAM_NAME_FENCE_DIST_WARNING, VAR_UINT8  | MASTER_VALUE, .config.minmaxUnsigned = { 0, FENCE_WARNING_MARGIN_MAX_M }, PG_FENCE_CONFIG, offsetof(fenceConfig_t, distanceWarningM) },
+#endif
 
 // PG_MODE_ACTIVATION_CONFIG
 #if defined(USE_CUSTOM_BOX_NAMES)

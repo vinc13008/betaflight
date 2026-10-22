@@ -264,6 +264,14 @@
 #define PARAM_NAME_AP_MAX_DISTANCE_FROM_HOME "ap_max_distance_from_home"
 #define PARAM_NAME_AP_GEOFENCE_ACTION "ap_geofence_action"
 
+// Flight envelope fence
+#define PARAM_NAME_FENCE_ALT_MODE "fence_alt_mode"
+#define PARAM_NAME_FENCE_ALT_MAX "fence_alt_max"
+#define PARAM_NAME_FENCE_ALT_WARNING "fence_alt_warning"
+#define PARAM_NAME_FENCE_DIST_MODE "fence_dist_mode"
+#define PARAM_NAME_FENCE_DIST_MAX "fence_dist_max"
+#define PARAM_NAME_FENCE_DIST_WARNING "fence_dist_warning"
+
 // Flight-plan OSD minimap
 #define PARAM_NAME_OSD_NAV_MAP_MODE "osd_nav_map_mode"
 #define PARAM_NAME_OSD_NAV_MAP_CENTRE "osd_nav_map_centre"

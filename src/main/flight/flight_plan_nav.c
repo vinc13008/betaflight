@@ -43,6 +43,7 @@
 
 #include "flight/alt_hold.h"
 #include "flight/autopilot.h"
+#include "flight/fence.h"
 #include "flight/flight_plan_nav.h"
 #ifdef USE_WING
 #include "flight/flight_plan_nav_wing.h"
@@ -461,6 +462,13 @@ static bool computeTargetEnuM(const waypoint_t *wp, vector3_t *out)
     // whichever source armed it first (baro or GPS). zBiasM is the frame
     // offset between the two, which aligns the target Up with the feedback Up.
     out->v[ENU_U] = (wp->altitude - origin.altCm) * 0.01f + fp.zBiasM;
+#ifdef USE_FENCE
+    // A waypoint above the ceiling is flown at it: a leg waiting on an altitude it cannot reach would never complete
+    float altitudeCm = out->v[ENU_U] * 100.0f;
+    if (fenceConstrainAltitudeTarget(&altitudeCm)) {
+        out->v[ENU_U] = altitudeCm * 0.01f;
+    }
+#endif
     return true;
 }
 
@@ -1863,10 +1871,18 @@ static void checkGeofence(timeUs_t currentTimeUs)
     }
 
     const autopilotConfig_t *cfg = autopilotConfig();
-    if (cfg->maxDistanceFromHomeM == 0 || !STATE(GPS_FIX_HOME)) {
+    uint16_t maxDistanceM = cfg->maxDistanceFromHomeM;
+#ifdef USE_FENCE
+    // A mission is held to the fence radius too, whichever is the tighter
+    const uint16_t fenceDistanceM = fenceGetDistanceLimitM();
+    if (fenceDistanceM != 0 && (maxDistanceM == 0 || fenceDistanceM < maxDistanceM)) {
+        maxDistanceM = fenceDistanceM;
+    }
+#endif
+    if (maxDistanceM == 0 || !STATE(GPS_FIX_HOME)) {
         return;
     }
-    if (GPS_distanceToHome <= cfg->maxDistanceFromHomeM) {
+    if (GPS_distanceToHome <= maxDistanceM) {
         return;
     }
 

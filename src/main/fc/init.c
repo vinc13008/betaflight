@@ -96,6 +96,7 @@
 #include "fc/tasks.h"
 
 #include "flight/alt_hold.h"
+#include "flight/fence.h"
 #include "flight/autopilot.h"
 #include "flight/failsafe.h"
 #if ENABLE_FLIGHT_PLAN
@@ -1066,6 +1067,10 @@ void initPhase3(void)
 
 #ifdef USE_POSITION_HOLD
     posHoldInit();
+#endif
+
+#ifdef USE_FENCE
+    fenceInit();
 #endif
 
 #ifdef USE_GPS_RESCUE

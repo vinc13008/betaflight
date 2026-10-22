@@ -32,6 +32,7 @@
 
 #include "flight/autopilot.h"
 #include "flight/failsafe.h"
+#include "flight/fence.h"
 #include "flight/position.h"
 #include "flight/position_estimator.h"
 #include "flight/position_nav.h"
@@ -165,6 +166,10 @@ static void altHoldUpdateTargetAltitude(timeUs_t taskIntervalUs)
     if (fabsf(getAltitudeCmControl() - altHold.targetAltitudeCm) < maxClimbRate * 1.0f /* s */) {
         altHold.targetAltitudeCm += altHold.targetVelocity * US_TO_INTERVAL(taskIntervalUs);
     }
+#ifdef USE_FENCE
+    // otherwise a target wound up past the ceiling would have to unwind before a descent began
+    fenceConstrainAltitudeTarget(&altHold.targetAltitudeCm);
+#endif
 }
 
 static void altHoldUpdate(timeUs_t taskIntervalUs)

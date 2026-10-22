@@ -272,6 +272,16 @@ encoding_unittest_SRC := \
 		$(USER_DIR)/common/encoding.c
 
 
+fence_unittest_SRC := \
+		$(USER_DIR)/flight/fence.c \
+		$(USER_DIR)/pg/fence.c \
+		$(USER_DIR)/common/maths.c \
+		$(USER_DIR)/common/vector.c
+
+fence_unittest_DEFINES := \
+		USE_FENCE= \
+		USE_POSITION_HOLD=
+
 flight_failsafe_unittest_SRC := \
 		$(USER_DIR)/common/bitarray.c \
 		$(USER_DIR)/fc/rc_modes.c \

@@ -33,6 +33,7 @@
 #include "fc/rc_controls.h"
 #include "fc/runtime_config.h"
 
+#include "flight/fence.h"
 #include "flight/imu.h"
 #include "flight/position.h"
 #include "flight/position_estimator.h"
@@ -392,6 +393,12 @@ void autopilotClearAltHoldHoverThrottle(void)
 void altitudeControl(float targetAltitudeCm, timeUs_t taskIntervalUs, float targetAltitudeVelCmS, float velLimitCmS)
 {
     const float taskIntervalS = US_TO_INTERVAL(taskIntervalUs);
+#ifdef USE_FENCE
+    // Every altitude target - alt hold, rescue, mission - comes through here: none above the ceiling
+    if (fenceConstrainAltitudeTarget(&targetAltitudeCm)) {
+        targetAltitudeVelCmS = fminf(targetAltitudeVelCmS, 0.0f);
+    }
+#endif
     // PID controller on altitude error
     const float currentAltitudeCm = getAltitudeCmControl(); // un-filtered altitude from Kalman filter
     const float verticalAcceleration = getAltitudeAccelerationControl();
@@ -769,7 +776,10 @@ static void updateYawControl(float dt, const positionEstimate3d_t *est)
     }
 
     const bool rescueYawActive = FLIGHT_MODE(GPS_RESCUE_MODE);
-    const bool navYawActive = FLIGHT_MODE(AUTOPILOT_MODE) && ap.navActive;
+    bool navYawActive = FLIGHT_MODE(AUTOPILOT_MODE) && ap.navActive;
+#ifdef USE_FENCE
+    navYawActive |= fenceOwnsPosition() && ap.navActive;   // the fence's way back, flown nose first
+#endif
     const bool holdYawActive = FLIGHT_MODE(POS_HOLD_MODE) || FLIGHT_MODE(MAG_MODE) || FLIGHT_MODE(AUTOPILOT_MODE);
 
     if (!rescueYawActive && !holdYawActive) {

@@ -48,6 +48,7 @@
 #include "flight/alt_hold.h"
 #include "flight/autopilot.h"
 #include "flight/failsafe.h"
+#include "flight/fence.h"
 #include "flight/gps_rescue.h"
 #include "flight/launch_wing.h"
 #include "flight/imu.h"
@@ -829,6 +830,11 @@ FAST_CODE_NOINLINE_CRITICAL void mixTable(timeUs_t currentTimeUs)
     if (FLIGHT_MODE(GPS_RESCUE_MODE) && autopilotThrottleValid()) {
         throttle = getAutopilotThrottle();
     }
+#endif
+
+#ifdef USE_FENCE
+    // Last word on the throttle, whoever set it: the altitude ceiling only ever lowers it
+    throttle = fenceLimitThrottle(throttle);
 #endif
 
 #if defined(USE_WING) && defined(USE_LAUNCH_WING)
