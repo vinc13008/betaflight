@@ -1207,12 +1207,21 @@ bool positionControl(void)
     }
     // Ahead of the heading recovery: alt hold keeps flying this command's altitude ramp through it.
     positionNavUpdate(dt, est);
-    if (headingRecovery) {
+    bool levelOnly = headingRecovery;
+    float levelPitchDeg = headingRecoveryPitchDeg;
+#ifdef USE_FENCE
+    if (!levelOnly && fenceHoldsLevel()) {
+        // the fence, with no heading to brake with, holds the aircraft level for drag to stop it
+        levelOnly = true;
+        levelPitchDeg = 0.0f;
+    }
+#endif
+    if (levelOnly) {
         wasNavActive = false;
         disableYawControl();
         setYawDisableReason(11);
         autopilotAngle[AI_ROLL]  = 0.0f;
-        autopilotAngle[AI_PITCH] = headingRecoveryPitchDeg;
+        autopilotAngle[AI_PITCH] = levelPitchDeg;
         DEBUG_SET(DEBUG_AUTOPILOT_PID, 7, 200);   //!< Status Flags
         DEBUG_SET(DEBUG_AUTOPILOT_STOP, 6, 200);  //!< Status Flags
         DEBUG_SET(DEBUG_AUTOPILOT_STOP, 7, 200);  //!< Status Flags

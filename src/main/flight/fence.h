@@ -39,14 +39,18 @@
 // inside it: position hold brakes it, leaning no further than the brake angle, flies it
 // back inside nose towards home, and holds it there until the pilot centres the roll and
 // pitch sticks, which hands control back. The throttle is eased over to alt hold and back.
+// Without a compass, until the GPS course has taught the IMU a heading, the fence can only
+// level the aircraft for drag to stop it, and taking it earlier allows for that.
 
 typedef enum {
     FENCE_WARNING_NONE = 0,
     FENCE_WARNING_RETURNING,        // the fence is flying the aircraft back inside the radius
     FENCE_WARNING_HOLDING,          // ...and holds it there until the sticks are centred
+    FENCE_WARNING_STOPPING,         // the fence has levelled the aircraft, having no heading to brake it with
     FENCE_WARNING_ALTITUDE_MAX,     // at or above the ceiling
     FENCE_WARNING_DISTANCE_MAX,     // at or beyond the radius
     FENCE_WARNING_UNAVAILABLE,      // a limit is set but cannot be measured or enforced right now
+    FENCE_WARNING_NO_HEADING,       // no heading learnt yet: the radius would only be held by levelling
     FENCE_WARNING_ALTITUDE_NEAR,    // within the warning margin of the ceiling
     FENCE_WARNING_DISTANCE_NEAR,    // within the warning margin of the radius
 } fenceWarning_e;
@@ -76,6 +80,8 @@ bool fenceConstrainAltitudeTarget(float *targetAltitudeCm);
 // Radius: the fence has taken the aircraft: angle, alt hold and pos hold are forced, and the
 // pilot's roll and pitch are ignored until centring them hands it back
 bool fenceOwnsFlight(void);
+// Radius: the fence has no heading to brake with, so position hold holds the aircraft level
+bool fenceHoldsLevel(void);
 // Radius: the steepest position hold may lean the aircraft while the fence has it,
 // degrees, 0 = no limit of the fence's
 float fenceGetMaxAngleDeg(void);

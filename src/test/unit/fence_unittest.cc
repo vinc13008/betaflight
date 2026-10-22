@@ -586,24 +586,143 @@ TEST_F(FenceTest, LosingPositionHoldHandsBackAndDoesNotSnatchAgain)
     EXPECT_TRUE(fenceOwnsFlight());
 }
 
-TEST_F(FenceTest, NoPositionMeansNoReturnAndAWarning)
+TEST_F(FenceTest, NoGpsMeansNoRadiusAndAWarning)
 {
     arm();
     fenceConfigMutable()->distanceMode = FENCE_MODE_LIMIT;
+    DISABLE_STATE(GPS_FIX);
     placeEast(105.0f, 0.0f);
-    mockPosHoldReady = false;               // e.g. no heading yet
     step();
     EXPECT_FALSE(fenceOwnsFlight());
-    EXPECT_EQ(FENCE_WARNING_DISTANCE_MAX, fenceGetWarning());
+    EXPECT_EQ(FENCE_WARNING_UNAVAILABLE, fenceGetWarning());
+}
 
+// Without a compass, before the GPS course has taught the IMU a heading
+
+TEST_F(FenceTest, WithoutAHeadingThePilotIsToldToFlyStraight)
+{
+    arm();
+    fenceConfigMutable()->distanceMode = FENCE_MODE_LIMIT;
+    mockPosHoldReady = false;
     placeEast(50.0f, 0.0f);
     step();
-    EXPECT_EQ(FENCE_WARNING_UNAVAILABLE, fenceGetWarning());
+    EXPECT_FALSE(fenceOwnsFlight());
+    EXPECT_EQ(FENCE_WARNING_NO_HEADING, fenceGetWarning());
 
-    DISABLE_STATE(GPS_FIX);
+    mockPosHoldReady = true;                // a few seconds flying straight ahead
+    step();
+    EXPECT_EQ(FENCE_WARNING_NONE, fenceGetWarning());
+}
+
+TEST_F(FenceTest, WithoutAHeadingTheFenceTakesItEarlier)
+{
+    arm();
+    fenceConfigMutable()->distanceMode = FENCE_MODE_LIMIT;
+    // 5 m/s out from 85 m: braked, it stops at 91.9 m
+    placeEast(85.0f, 500.0f);
+    step();
+    EXPECT_FALSE(fenceOwnsFlight());
+
+    // only levelled, drag takes 20 m more and it would stop at 108.8 m
+    mockPosHoldReady = false;
+    step();
+    EXPECT_TRUE(fenceOwnsFlight());
+}
+
+TEST_F(FenceTest, WithoutAHeadingTheFenceLevelsItAndHandsItBackStopped)
+{
+    arm();
+    fenceConfigMutable()->distanceMode = FENCE_MODE_LIMIT;
+    mockPosHoldReady = false;
+    placeEast(90.0f, 400.0f);
+    step();
+    ASSERT_TRUE(fenceOwnsFlight());
+    EXPECT_TRUE(fenceHoldsLevel());
+    EXPECT_EQ(FENCE_WARNING_STOPPING, fenceGetWarning());
+    EXPECT_EQ(0, mockNavTargetsSet);        // nothing to fly back with
+
+    // still coasting: sticks centred do not hand it back yet
+    placeEast(97.0f, 200.0f);
+    for (int i = 0; i < 100; i++) {
+        step();
+    }
+    EXPECT_TRUE(fenceHoldsLevel());
+
+    // stopped: the pilot can have it back, to fly in themselves
+    placeEast(98.0f, 50.0f);
+    step();
+    EXPECT_EQ(FENCE_WARNING_HOLDING, fenceGetWarning());
+    for (int i = 0; i < 52; i++) {
+        step();
+    }
+    EXPECT_FALSE(fenceOwnsFlight());
+
+    // still drifting out a little: not levelled again, the pilot is flying it back
+    for (int i = 0; i < 100; i++) {
+        step();
+    }
+    EXPECT_FALSE(fenceOwnsFlight());
+
+    // flown in nose first: the heading is learnt, and the full fence is back
+    mockPosHoldReady = true;
+    placeEast(99.0f, 300.0f);
+    step();
+    EXPECT_EQ(FENCE_WARNING_RETURNING, fenceGetWarning());
+}
+
+TEST_F(FenceTest, LevelledAgainOnlyOnceBackInside)
+{
+    arm();
+    fenceConfigMutable()->distanceMode = FENCE_MODE_LIMIT;
+    mockPosHoldReady = false;
+    placeEast(98.0f, 400.0f);
+    step();
+    placeEast(99.0f, 0.0f);
+    for (int i = 0; i < 53; i++) {
+        step();
+    }
+    ASSERT_FALSE(fenceOwnsFlight());
+
+    placeEast(99.0f, 300.0f);
+    step();
+    EXPECT_FALSE(fenceOwnsFlight());
+
+    placeEast(60.0f, 0.0f);                 // flown back in
+    step();
+    placeEast(90.0f, 400.0f);               // and out again
+    step();
+    EXPECT_TRUE(fenceHoldsLevel());
+}
+
+TEST_F(FenceTest, WithoutAHeadingADriftingAircraftIsHandedBackInTheEnd)
+{
+    arm();
+    fenceConfigMutable()->distanceMode = FENCE_MODE_LIMIT;
+    mockPosHoldReady = false;
+    placeEast(98.0f, 300.0f);
+    step();
+    ASSERT_TRUE(fenceHoldsLevel());
+
+    placeEast(101.0f, 300.0f);              // carried on the wind, never stopping
+    step(9900000);
+    EXPECT_EQ(FENCE_WARNING_STOPPING, fenceGetWarning());
+    step(200000);
+    EXPECT_EQ(FENCE_WARNING_HOLDING, fenceGetWarning());
+}
+
+TEST_F(FenceTest, AHeadingLearntWhileLevelledBrakesAndFliesBack)
+{
+    arm();
+    fenceConfigMutable()->distanceMode = FENCE_MODE_LIMIT;
+    mockPosHoldReady = false;
+    placeEast(98.0f, 400.0f);
+    step();
+    ASSERT_TRUE(fenceHoldsLevel());
+
     mockPosHoldReady = true;
     step();
-    EXPECT_EQ(FENCE_WARNING_UNAVAILABLE, fenceGetWarning());
+    EXPECT_FALSE(fenceHoldsLevel());
+    EXPECT_EQ(FENCE_WARNING_RETURNING, fenceGetWarning());
 }
 
 TEST_F(FenceTest, ReturnThatNeverArrivesHandsBack)

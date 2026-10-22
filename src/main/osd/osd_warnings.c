@@ -376,6 +376,16 @@ void renderOsdWarning(char *warningText, bool *blinking, uint8_t *displayAttr)
         tfp_sprintf(warningText, "FENCE CENTER STICKS");
         *displayAttr = DISPLAYPORT_SEVERITY_WARNING;
         return;
+    case FENCE_WARNING_STOPPING:
+        tfp_sprintf(warningText, "FENCE STOP");
+        *displayAttr = DISPLAYPORT_SEVERITY_CRITICAL;
+        *blinking = true;
+        return;
+    case FENCE_WARNING_NO_HEADING:
+        // flying straight ahead for a few seconds teaches the IMU its heading from the GPS course
+        tfp_sprintf(warningText, "FENCE FLY STRAIGHT");
+        *displayAttr = DISPLAYPORT_SEVERITY_WARNING;
+        return;
     case FENCE_WARNING_ALTITUDE_MAX:
         tfp_sprintf(warningText, "MAX ALTITUDE");
         *displayAttr = DISPLAYPORT_SEVERITY_CRITICAL;

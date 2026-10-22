@@ -1683,6 +1683,44 @@ def scenario_fence_distance(sitl, rc, fdm):
     assert BOX_ARM in sitl.modes(), "disarmed during the return"
 
 
+FENCE_STATE_LEVEL = 4    # fenceReturnState_e: levelled, no heading to brake with
+
+
+def scenario_fence_distance_no_heading(sitl, rc, fdm):
+    """No compass, and flown out on roll alone, so the GPS course never teaches
+    the IMU a heading: the fence cannot brake or fly back, so it levels the
+    aircraft early enough for drag to stop it inside the radius, then hands it
+    back once stopped and the sticks are centred."""
+    boot_and_arm(sitl, rc, fdm)
+    rc.set(2, 1600)     # climb clear of the ground
+    time.sleep(3.0)
+    rc.set(2, 1450)
+    rc.set(0, 1700)     # roll right: out to the east, sideways
+
+    wait_for(
+        "fence takes the aircraft (ALTHOLD + POSHOLD forced)",
+        lambda: {BOX_ALTHOLD, BOX_POSHOLD} <= sitl.modes(),
+        timeout=60,
+        interval=0.1,
+    )
+    state = sitl.debug_values()[0]
+    log(f"fence engaged {fdm.distance_from_home():.1f} m out at {fdm.ground_speed():.1f} m/s, state {state}")
+    assert state == FENCE_STATE_LEVEL, f"fence state {state}: the IMU had a heading, or the fence braked without one"
+    rc.set(2, 1300)
+
+    time.sleep(1.5)
+    roll, pitch = sitl.attitude()
+    log(f"levelled to roll {roll:.0f} pitch {pitch:.0f} deg with the stick still held")
+    assert abs(roll) < 8 and abs(pitch) < 8, f"not levelled: roll {roll:.0f} pitch {pitch:.0f}"
+
+    wait_for("stopped", lambda: fdm.ground_speed() < 0.8, timeout=30, interval=0.5)
+    rc.set(0, RC_MID)   # centre the sticks: the pilot takes it back
+    wait_for("handed back (POSHOLD released)", lambda: BOX_POSHOLD not in sitl.modes(), timeout=30, interval=0.5)
+    peak_m = max(math.hypot(s[1], s[2]) for s in fdm.snapshot_history())
+    log(f"furthest out {peak_m:.1f} m against a {FENCE_DIST_M} m radius")
+    assert peak_m < FENCE_DIST_M, f"flew {peak_m:.1f} m out against a {FENCE_DIST_M} m radius"
+
+
 def scenario_fence_altitude(sitl, rc, fdm):
     """Full throttle in ANGLE: the ceiling caps the climb and holds the
     aircraft under it, and the pilot can still throttle down."""
@@ -3757,6 +3795,28 @@ SCENARIOS = {
     "fence_distance": (
         scenario_fence_distance,
         [
+            "set debug_mode = FENCE",
+            "set fence_dist_mode = LIMIT",
+            f"set fence_dist_max = {FENCE_DIST_M}",
+            "set fence_dist_warning = 10",
+        ],
+    ),
+    # without a compass: flown out nose first the course teaches the IMU its heading on the way,
+    # and the fence brakes and flies back as with one
+    "fence_distance_no_mag": (
+        scenario_fence_distance,
+        [
+            "set mag_hardware = NONE",
+            "set debug_mode = FENCE",
+            "set fence_dist_mode = LIMIT",
+            f"set fence_dist_max = {FENCE_DIST_M}",
+            "set fence_dist_warning = 10",
+        ],
+    ),
+    "fence_distance_no_heading": (
+        scenario_fence_distance_no_heading,
+        [
+            "set mag_hardware = NONE",
             "set debug_mode = FENCE",
             "set fence_dist_mode = LIMIT",
             f"set fence_dist_max = {FENCE_DIST_M}",

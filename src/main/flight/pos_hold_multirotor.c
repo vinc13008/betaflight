@@ -138,7 +138,11 @@ void updatePosHold(timeUs_t currentTimeUs)
     if (posHold.isEnabled) {
         posHoldCheckSticks();
         const bool sensorsWereOk = posHold.areSensorsOk;
-        posHold.areSensorsOk = sensorsOk(isHeadingRecoveryActive());
+        bool levelOnly = isHeadingRecoveryActive();
+#ifdef USE_FENCE
+        levelOnly = levelOnly || fenceHoldsLevel();   // levelling needs no heading either
+#endif
+        posHold.areSensorsOk = sensorsOk(levelOnly);
         if (posHold.areSensorsOk) {
             if (!sensorsWereOk) {
                 // Sensors came back after a dropout: the craft drifted while

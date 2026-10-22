@@ -94,12 +94,16 @@
 #define FENCE_DIST_RELEASE_DELAY_US     500000      // roll and pitch centred this long hand the aircraft back
 #define FENCE_DIST_ENGAGE_GRACE_US      500000      // position hold has this long to take the aircraft before it counts as failing
 #define FENCE_DIST_RETURN_YAW_RATE_DPS  90.0f       // the turn to face home, unhurried
+#define FENCE_DIST_LEVEL_DRAG_PER_S     0.25f       // 1/s: the drag a levelled aircraft is counted on to stop with,
+                                                    // speed lost per second per unit of speed (an exponential coast)
+#define FENCE_DIST_LEVEL_TIMEOUT_US     10000000    // levelled this long counts as stopped: drag will not beat a wind
 
 typedef enum {
     FENCE_RETURN_IDLE = 0,      // the pilot flies
     FENCE_RETURN_BRAKING,       // position hold brings the aircraft to a stop
     FENCE_RETURN_FLYING,        // flying back to the return point inside the radius
     FENCE_RETURN_HOLDING,       // holding inside the radius until the pilot centres the sticks
+    FENCE_RETURN_LEVEL,         // no heading to brake or fly back with: held level for drag to stop it
 } fenceReturnState_e;
 
 typedef struct fenceState_s {
@@ -123,6 +127,7 @@ typedef struct fenceState_s {
     // radius
     bool distanceValid;
     float distanceCm;               // horizontal, from home
+    float stopDistanceCm;           // from home, where the aircraft would come to rest were it taken now
     float radialSpeedCmS;           // positive away from home
     vector2_t homeEfCm;             // home in the estimator frame
     fenceReturnState_e returnState;
@@ -132,7 +137,11 @@ typedef struct fenceState_s {
     bool sticksCentred;
     timeUs_t sticksCentredUs;
     bool returnUnavailable;         // the radius is enforced but the fence cannot fly the aircraft
+    bool headingUnknown;            // the radius is enforced but, without a heading, could only be held by levelling
+    bool levelStopped;              // levelled, and stopped as far as drag will stop it
     bool returnLockout;             // a return was abandoned: none again until the aircraft is back inside
+    bool levelLockout;              // levelled and handed back: not levelled again until back inside, or a wind
+                                    // carrying it out would keep the pilot from ever flying it back
     bool ownsNavTarget;
     uint32_t navSequence;
 } fenceState_t;
@@ -169,6 +178,13 @@ STATIC_UNIT_TESTED float fenceStopDistanceCm(float distanceCm, float radialSpeed
 {
     const float outwardCmS = fmaxf(radialSpeedCmS, 0.0f);
     return distanceCm + outwardCmS * FENCE_DIST_REACTION_TIME_S + sq(outwardCmS) / (2.0f * decelCmSS);
+}
+
+// ...and if it could only level the aircraft and leave drag to stop it
+STATIC_UNIT_TESTED float fenceLevelStopDistanceCm(float distanceCm, float radialSpeedCmS)
+{
+    const float outwardCmS = fmaxf(radialSpeedCmS, 0.0f);
+    return distanceCm + outwardCmS * (FENCE_DIST_REACTION_TIME_S + 1.0f / FENCE_DIST_LEVEL_DRAG_PER_S);
 }
 
 static float brakeAngleDeg(void)
@@ -262,6 +278,7 @@ static void setReturnState(fenceReturnState_e state, timeUs_t currentTimeUs)
     fence.returnState = state;
     fence.returnStateUs = currentTimeUs;
     fence.sticksCentred = false;
+    fence.levelStopped = false;
 }
 
 static void releaseNavTarget(void)
@@ -323,6 +340,19 @@ static bool sticksCentred(void)
         && rxAreFlightChannelsValid();
 }
 
+// Hands the aircraft back once the pilot has held the sticks there long enough
+static void releaseWhenSticksCentred(timeUs_t currentTimeUs)
+{
+    if (!sticksCentred()) {
+        fence.sticksCentred = false;
+    } else if (!fence.sticksCentred) {
+        fence.sticksCentred = true;
+        fence.sticksCentredUs = currentTimeUs;
+    } else if (cmpTimeUs(currentTimeUs, fence.sticksCentredUs) >= FENCE_DIST_RELEASE_DELAY_US) {
+        setReturnState(FENCE_RETURN_IDLE, currentTimeUs);
+    }
+}
+
 static void updateReturn(timeUs_t currentTimeUs)
 {
     const fenceConfig_t *cfg = fenceConfig();
@@ -333,16 +363,23 @@ static void updateReturn(timeUs_t currentTimeUs)
     const bool deferred = failsafeIsActive()
         || FLIGHT_MODE(GPS_RESCUE_MODE | AUTOPILOT_MODE)
         || flightPlanNavIsRescueDescentActive();
-    // Position hold flies the return, with alt hold under it; reversible motors would read its throttle backwards
-    const bool canFly = fence.distanceValid && fence.altitudeValid && posHoldReady() && !featureIsEnabled(FEATURE_3D);
+    // Position hold flies the aircraft, with alt hold under it; reversible motors would read its throttle backwards
+    const bool canFly = fence.distanceValid && fence.altitudeValid && !featureIsEnabled(FEATURE_3D);
     const bool allowed = enforced && !deferred && canFly;
-    const bool breach = fence.distanceValid && fenceStopDistanceCm(fence.distanceCm, fence.radialSpeedCmS, brakeDecelCmSS()) >= limitCm;
+    // Without a compass, and before the GPS course has taught the IMU a heading, position hold cannot
+    // turn a brake or the way back into a lean: the aircraft can only be levelled for drag to stop it
+    const bool headingKnown = posHoldReady();
+    fence.stopDistanceCm = headingKnown
+        ? fenceStopDistanceCm(fence.distanceCm, fence.radialSpeedCmS, brakeDecelCmSS())
+        : fenceLevelStopDistanceCm(fence.distanceCm, fence.radialSpeedCmS);
+    const bool breach = fence.distanceValid && fence.stopDistanceCm >= limitCm;
     // Position hold has been given the aircraft but is not flying it (its own sanity checks tripped)
     const bool controlLost = fence.returnState != FENCE_RETURN_IDLE
         && cmpTimeUs(currentTimeUs, fence.engagedUs) > FENCE_DIST_ENGAGE_GRACE_US
         && !isAutopilotInControl();
 
     fence.returnUnavailable = enforced && !canFly;
+    fence.headingUnknown = enforced && canFly && !headingKnown;
 
     if (fence.returnState != FENCE_RETURN_IDLE && (!allowed || controlLost)) {
         // Lost the means to fly it back: hand it to the pilot, and do not snatch it again
@@ -351,8 +388,10 @@ static void updateReturn(timeUs_t currentTimeUs)
         releaseNavTarget();
         setReturnState(FENCE_RETURN_IDLE, currentTimeUs);
     }
-    if (fence.returnLockout && (!ARMING_FLAG(ARMED) || (!breach && fence.distanceCm <= returnRadiusCm(cfg)))) {
+    const bool backInside = !breach && fence.distanceCm <= returnRadiusCm(cfg);
+    if (!ARMING_FLAG(ARMED) || backInside) {
         fence.returnLockout = false;
+        fence.levelLockout = false;
     }
 
     // Alt hold reads the stick as a climb rate: wherever the pilot had it when the fence took over is
@@ -363,10 +402,10 @@ static void updateReturn(timeUs_t currentTimeUs)
 
     switch (fence.returnState) {
     case FENCE_RETURN_IDLE:
-        if (allowed && breach && !fence.returnLockout) {
+        if (allowed && breach && !fence.returnLockout && (headingKnown || !fence.levelLockout)) {
             fence.engagedUs = currentTimeUs;
             fence.throttleStickHeld = true;
-            setReturnState(FENCE_RETURN_BRAKING, currentTimeUs);
+            setReturnState(headingKnown ? FENCE_RETURN_BRAKING : FENCE_RETURN_LEVEL, currentTimeUs);
         }
         break;
 
@@ -396,16 +435,28 @@ static void updateReturn(timeUs_t currentTimeUs)
         break;
 
     case FENCE_RETURN_HOLDING:
-        // The pilot flies position hold from here, and may fly it straight back out
+        // Held, the sticks ignored, until the pilot centres them; the wind may still push it out
         if (breach) {
             setReturnState(FENCE_RETURN_BRAKING, currentTimeUs);
-        } else if (!sticksCentred()) {
-            fence.sticksCentred = false;
-        } else if (!fence.sticksCentred) {
-            fence.sticksCentred = true;
-            fence.sticksCentredUs = currentTimeUs;
-        } else if (cmpTimeUs(currentTimeUs, fence.sticksCentredUs) >= FENCE_DIST_RELEASE_DELAY_US) {
-            setReturnState(FENCE_RETURN_IDLE, currentTimeUs);
+        } else {
+            releaseWhenSticksCentred(currentTimeUs);
+        }
+        break;
+
+    case FENCE_RETURN_LEVEL:
+        if (headingKnown) {
+            // The course has taught the IMU its heading meanwhile: brake and fly back properly
+            setReturnState(FENCE_RETURN_BRAKING, currentTimeUs);
+            break;
+        }
+        // Stopped, or as stopped as drag will get it against a wind: the pilot can have it back, to
+        // fly it in themselves - and flying in nose first teaches the IMU its heading
+        fence.levelStopped = fence.levelStopped
+            || positionEstimateGroundspeedCmS(positionEstimatorGetEstimate()) < FENCE_DIST_STOPPED_SPEED_CMS
+            || cmpTimeUs(currentTimeUs, fence.returnStateUs) > FENCE_DIST_LEVEL_TIMEOUT_US;
+        if (fence.levelStopped) {
+            releaseWhenSticksCentred(currentTimeUs);
+            fence.levelLockout = fence.returnState == FENCE_RETURN_IDLE;
         }
         break;
     }
@@ -424,7 +475,7 @@ void fenceUpdate(timeUs_t currentTimeUs)
     DEBUG_SET(DEBUG_FENCE, 0, fence.returnState);                                   //!< Return State [enum:fenceReturnState_e]
     DEBUG_SET(DEBUG_FENCE, 1, lrintf(fence.distanceCm * 0.01f));                    //!< Distance From Home [unit:m]
     DEBUG_SET(DEBUG_FENCE, 2, lrintf(fence.radialSpeedCmS));                        //!< Speed Away From Home [unit:cm/s]
-    DEBUG_SET(DEBUG_FENCE, 3, lrintf(fenceStopDistanceCm(fence.distanceCm, fence.radialSpeedCmS, brakeDecelCmSS()) * 0.01f)); //!< Stopping Distance From Home [unit:m]
+    DEBUG_SET(DEBUG_FENCE, 3, lrintf(fence.stopDistanceCm * 0.01f));                //!< Stopping Distance From Home [unit:m]
     DEBUG_SET(DEBUG_FENCE, 4, lrintf(fence.altitudeCm * 0.1f));                     //!< Altitude [unit:0.1m]
     DEBUG_SET(DEBUG_FENCE, 5, lrintf(fence.allowedClimbRateCmS));                   //!< Allowed Climb Rate [unit:cm/s]
     DEBUG_SET(DEBUG_FENCE, 6, lrintf((fence.throttleCapActive ? fence.throttleCap : 1.0f) * 1000.0f)); //!< Throttle Cap [unit:0.001]
@@ -522,6 +573,11 @@ bool fenceOwnsFlight(void)
     return fence.returnState != FENCE_RETURN_IDLE;
 }
 
+bool fenceHoldsLevel(void)
+{
+    return fence.returnState == FENCE_RETURN_LEVEL;
+}
+
 float fenceGetMaxAngleDeg(void)
 {
     return fenceOwnsFlight() ? brakeAngleDeg() : 0.0f;
@@ -555,6 +611,8 @@ fenceWarning_e fenceGetWarning(void)
         return FENCE_WARNING_RETURNING;
     case FENCE_RETURN_HOLDING:
         return FENCE_WARNING_HOLDING;
+    case FENCE_RETURN_LEVEL:
+        return fence.levelStopped ? FENCE_WARNING_HOLDING : FENCE_WARNING_STOPPING;
     default:
         break;
     }
@@ -573,6 +631,9 @@ fenceWarning_e fenceGetWarning(void)
         || (cfg->distanceMode != FENCE_MODE_OFF && !fence.distanceValid)
         || fence.returnUnavailable) {
         return FENCE_WARNING_UNAVAILABLE;
+    }
+    if (fence.headingUnknown) {
+        return FENCE_WARNING_NO_HEADING;
     }
     if (altitudeChecked && fenceGetAltitudeMarginM() <= cfg->altitudeWarningM) {
         return FENCE_WARNING_ALTITUDE_NEAR;
