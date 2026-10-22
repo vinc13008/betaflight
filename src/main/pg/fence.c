@@ -28,7 +28,7 @@
 
 #include "fence.h"
 
-PG_REGISTER_WITH_RESET_TEMPLATE(fenceConfig_t, fenceConfig, PG_FENCE_CONFIG, 0);
+PG_REGISTER_WITH_RESET_TEMPLATE(fenceConfig_t, fenceConfig, PG_FENCE_CONFIG, 1);
 
 PG_RESET_TEMPLATE(fenceConfig_t, fenceConfig,
     .altitudeMode = FENCE_MODE_OFF,
@@ -37,6 +37,7 @@ PG_RESET_TEMPLATE(fenceConfig_t, fenceConfig,
     .distanceMode = FENCE_MODE_OFF,
     .maxDistanceM = 1000,
     .distanceWarningM = 20,
+    .brakeAngleDeg = 30,
 );
 
 #endif // USE_FENCE

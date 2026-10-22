@@ -57,7 +57,7 @@ extern "C" {
     PG_REGISTER(rxConfig_t, rxConfig, PG_RX_CONFIG, 0);
 
     float fenceAllowedClimbRateCmS(float altitudeCm, float ceilingCm);
-    float fenceStopDistanceCm(float distanceCm, float radialSpeedCmS);
+    float fenceStopDistanceCm(float distanceCm, float radialSpeedCmS, float decelCmSS);
 
     uint8_t armingFlags = 0;
     uint16_t flightModeFlags = 0;
@@ -80,6 +80,7 @@ extern "C" {
     float getCosTiltAngle(void) { return mockCosTilt; }
     bool featureIsEnabled(const uint32_t mask) { return mask == FEATURE_3D && mock3d; }
     uint16_t autopilotGetEffectiveHoverThrottlePwm(void) { return 1300; }
+    float pidGetDT(void) { return 1.0f / 8000.0f; }     // 8 kHz loop
 
     // position: home sits mockHomeEfCm from the estimator origin
     static positionEstimate3d_t mockEstimate;
@@ -136,6 +137,28 @@ extern "C" {
 
 static timeUs_t now;
 
+#define LOOPS_PER_SECOND 8000
+
+// the throttle the mixer flies once the cap's filter has settled
+static float settledCap(float throttle)
+{
+    float out = throttle;
+    for (int i = 0; i < LOOPS_PER_SECOND / 2; i++) {
+        out = fenceLimitThrottle(throttle);
+    }
+    return out;
+}
+
+// the handover run for seconds of mixer loops at a steady input
+static float handover(float throttle, float seconds)
+{
+    float out = throttle;
+    for (int i = 0; i < lrintf(seconds * LOOPS_PER_SECOND); i++) {
+        out = fenceHandoverThrottle(throttle);
+    }
+    return out;
+}
+
 class FenceTest : public ::testing::Test {
 protected:
     void SetUp() override
@@ -170,8 +193,10 @@ protected:
         fenceConfigMutable()->distanceMode = FENCE_MODE_OFF;
         fenceConfigMutable()->maxDistanceM = 100;
         fenceConfigMutable()->distanceWarningM = 20;
+        fenceConfigMutable()->brakeAngleDeg = 30;   // braking counted on for 0.5 g tan 30 = 2.83 m/s^2
 
         autopilotConfigMutable()->maxVelocity = 500;
+        autopilotConfigMutable()->maxAngle = 50;
         posHoldConfigMutable()->deadband = 5;
         gpsRescueConfigMutable()->minSats = 8;
         rxConfigMutable()->mincheck = 1050;
@@ -251,7 +276,7 @@ TEST_F(FenceTest, FarBelowTheCeilingTheThrottleIsLeftAlone)
     mockAltitudeCm = 3000.0f;
     mockClimbRateCmS = 500.0f;
     step();
-    EXPECT_FLOAT_EQ(1.0f, fenceLimitThrottle(1.0f));
+    EXPECT_FLOAT_EQ(1.0f, settledCap(1.0f));
 }
 
 TEST_F(FenceTest, ClimbingIntoTheCeilingCapsTheThrottle)
@@ -261,7 +286,7 @@ TEST_F(FenceTest, ClimbingIntoTheCeilingCapsTheThrottle)
     mockAltitudeCm = 11500.0f;      // 5 m below, allowed 5 m/s
     mockClimbRateCmS = 1500.0f;     // climbing at 15 m/s
     step();
-    const float capped = fenceLimitThrottle(1.0f);
+    const float capped = settledCap(1.0f);
     EXPECT_LT(capped, 0.1f);
     // the pilot can always throttle lower
     EXPECT_FLOAT_EQ(0.0f, fenceLimitThrottle(0.0f));
@@ -275,7 +300,7 @@ TEST_F(FenceTest, HoveringAtTheCeilingCapsNearHover)
     mockClimbRateCmS = 0.0f;
     step();
     // hover 1300 us over a 1050..2000 range
-    EXPECT_NEAR((1300.0f - 1050.0f) / 950.0f, fenceLimitThrottle(1.0f), 0.001f);
+    EXPECT_NEAR((1300.0f - 1050.0f) / 950.0f, settledCap(1.0f), 0.001f);
 }
 
 TEST_F(FenceTest, TiltRaisesTheCapAndInvertedLiftsIt)
@@ -284,12 +309,13 @@ TEST_F(FenceTest, TiltRaisesTheCapAndInvertedLiftsIt)
     fenceConfigMutable()->altitudeMode = FENCE_MODE_LIMIT;
     mockAltitudeCm = 12000.0f;
     step();
-    const float levelCap = fenceLimitThrottle(1.0f);
+    const float levelCap = settledCap(1.0f);
 
     mockCosTilt = 0.5f;
     step();
-    EXPECT_NEAR(2.0f * levelCap, fenceLimitThrottle(1.0f), 0.01f);
+    EXPECT_NEAR(2.0f * levelCap, settledCap(1.0f), 0.01f);
 
+    // let go of at once upside down
     mockCosTilt = -0.5f;
     step();
     EXPECT_FLOAT_EQ(1.0f, fenceLimitThrottle(1.0f));
@@ -337,9 +363,9 @@ TEST_F(FenceTest, ArmingNeedsWhatAnEnforcedLimitMeasuresWith)
 
 TEST_F(FenceTest, StopDistanceCountsOnlyOutwardSpeed)
 {
-    EXPECT_FLOAT_EQ(5000.0f, fenceStopDistanceCm(5000.0f, -1000.0f));
+    EXPECT_FLOAT_EQ(5000.0f, fenceStopDistanceCm(5000.0f, -1000.0f, 400.0f));
     // 10 m/s braking at 4 m/s^2 takes 12.5 m
-    EXPECT_FLOAT_EQ(6250.0f, fenceStopDistanceCm(5000.0f, 1000.0f));
+    EXPECT_FLOAT_EQ(6250.0f, fenceStopDistanceCm(5000.0f, 1000.0f, 400.0f));
 }
 
 TEST_F(FenceTest, WarnModeNeverTakesTheAircraft)
@@ -365,13 +391,13 @@ TEST_F(FenceTest, BreachIsCaughtBeforeTheRadius)
     EXPECT_EQ(FENCE_WARNING_DISTANCE_NEAR, fenceGetWarning());
     EXPECT_EQ(15, fenceGetDistanceMarginM());
 
-    // 10 m/s out would carry it to 97.5 m: still fine
-    placeEast(85.0f, 1000.0f);
+    // 7 m/s out, braking at 2.83 m/s^2, would carry it to 93.7 m: still fine
+    placeEast(85.0f, 700.0f);
     step();
     EXPECT_FALSE(fenceOwnsFlight());
 
-    // 15 m/s out would carry it to 113 m
-    placeEast(85.0f, 1500.0f);
+    // 10 m/s out would carry it to 102.7 m
+    placeEast(85.0f, 1000.0f);
     step();
     EXPECT_TRUE(fenceOwnsFlight());
     EXPECT_TRUE(fenceOwnsPosition());
@@ -607,4 +633,103 @@ TEST_F(FenceTest, AltitudeWarnings)
     mockAltitudeValid = false;
     step();
     EXPECT_EQ(FENCE_WARNING_UNAVAILABLE, fenceGetWarning());
+}
+
+// Smoothing
+
+TEST_F(FenceTest, TheCapEasesIn)
+{
+    arm();
+    fenceConfigMutable()->altitudeMode = FENCE_MODE_LIMIT;
+    mockAltitudeCm = 12000.0f;
+    step();
+    const float hover = (1300.0f - 1050.0f) / 950.0f;
+
+    // one loop in, most of the way still to go
+    const float first = fenceLimitThrottle(1.0f);
+    EXPECT_GT(first, 0.95f);
+    // 16 ms (one time constant at 10 Hz) in, about two thirds of the way down
+    float out = first;
+    for (int i = 1; i < 127; i++) {
+        out = fenceLimitThrottle(1.0f);
+    }
+    EXPECT_NEAR(1.0f - (1.0f - hover) * 0.63f, out, 0.02f);
+    EXPECT_NEAR(hover, settledCap(1.0f), 0.001f);
+}
+
+TEST_F(FenceTest, BrakingLeansNoFurtherThanTheBrakeAngle)
+{
+    arm();
+    fenceConfigMutable()->distanceMode = FENCE_MODE_LIMIT;
+    EXPECT_FLOAT_EQ(0.0f, fenceGetMaxAngleDeg());   // the pilot flies
+
+    placeEast(105.0f, 0.0f);
+    step();
+    ASSERT_TRUE(fenceOwnsPosition());
+    EXPECT_FLOAT_EQ(30.0f, fenceGetMaxAngleDeg());
+
+    // never past what position hold itself may lean
+    autopilotConfigMutable()->maxAngle = 20;
+    EXPECT_FLOAT_EQ(20.0f, fenceGetMaxAngleDeg());
+}
+
+TEST_F(FenceTest, AGentlerBrakeAngleTakesTheAircraftEarlier)
+{
+    arm();
+    fenceConfigMutable()->distanceMode = FENCE_MODE_LIMIT;
+    fenceConfigMutable()->brakeAngleDeg = 50;   // 0.5 g tan 50 = 5.84 m/s^2
+
+    // 10 m/s out from 85 m stops at 93.6 m braking hard
+    placeEast(85.0f, 1000.0f);
+    step();
+    EXPECT_FALSE(fenceOwnsFlight());
+
+    // but at 102.7 m braking at 30 degrees
+    fenceConfigMutable()->brakeAngleDeg = 30;
+    step();
+    EXPECT_TRUE(fenceOwnsFlight());
+}
+
+TEST_F(FenceTest, ThrottleEasesOverToAltHoldWhenTheFenceTakesTheAircraft)
+{
+    arm();
+    fenceConfigMutable()->distanceMode = FENCE_MODE_LIMIT;
+    placeEast(50.0f, 0.0f);
+    step();
+    EXPECT_FLOAT_EQ(0.6f, handover(0.6f, 0.1f));    // the pilot's throttle, untouched
+
+    placeEast(105.0f, 0.0f);
+    step();
+    ASSERT_TRUE(fenceOwnsFlight());
+    // alt hold has not computed its throttle yet: hardly felt
+    EXPECT_GT(handover(0.0f, 0.01f), 0.55f);
+    // half way through, half way over
+    EXPECT_NEAR(0.45f, handover(0.3f, 0.14f), 0.01f);
+    EXPECT_FLOAT_EQ(0.3f, handover(0.3f, 0.2f));
+}
+
+TEST_F(FenceTest, ThrottleEasesBackToThePilotWhenHandedBack)
+{
+    arm();
+    fenceConfigMutable()->distanceMode = FENCE_MODE_LIMIT;
+    placeEast(98.0f, 800.0f);
+    step();
+    placeEast(80.0f, 0.0f);
+    step();
+    ASSERT_EQ(FENCE_WARNING_HOLDING, fenceGetWarning());
+    EXPECT_FLOAT_EQ(0.3f, handover(0.3f, 0.5f));    // alt hold's throttle
+
+    for (int i = 0; i < 52; i++) {
+        step();     // sticks centred half a second: handed back
+    }
+    ASSERT_FALSE(fenceOwnsFlight());
+    EXPECT_NEAR(0.55f, handover(0.8f, 0.5f), 0.01f);
+    EXPECT_FLOAT_EQ(0.8f, handover(0.8f, 0.6f));
+}
+
+TEST_F(FenceTest, NoHandoverWhileDisarmed)
+{
+    EXPECT_FLOAT_EQ(0.2f, fenceHandoverThrottle(0.2f));
+    arm();
+    EXPECT_FLOAT_EQ(0.7f, fenceHandoverThrottle(0.7f));
 }

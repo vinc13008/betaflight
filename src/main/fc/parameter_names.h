@@ -271,6 +271,7 @@
 #define PARAM_NAME_FENCE_DIST_MODE "fence_dist_mode"
 #define PARAM_NAME_FENCE_DIST_MAX "fence_dist_max"
 #define PARAM_NAME_FENCE_DIST_WARNING "fence_dist_warning"
+#define PARAM_NAME_FENCE_BRAKE_ANGLE "fence_brake_angle"
 
 // Flight-plan OSD minimap
 #define PARAM_NAME_OSD_NAV_MAP_MODE "osd_nav_map_mode"

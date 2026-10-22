@@ -2270,6 +2270,7 @@ const clivalue_t valueTable[] = {
     { PARAM_NAME_FENCE_DIST_MODE,    VAR_UINT8  | MASTER_VALUE | MODE_LOOKUP, .config.lookup = { TABLE_FENCE_MODE }, PG_FENCE_CONFIG, offsetof(fenceConfig_t, distanceMode) },
     { PARAM_NAME_FENCE_DIST_MAX,     VAR_UINT16 | MASTER_VALUE, .config.minmaxUnsigned = { FENCE_DISTANCE_MIN_M, FENCE_DISTANCE_MAX_M }, PG_FENCE_CONFIG, offsetof(fenceConfig_t, maxDistanceM) },
     { PARAM_NAME_FENCE_DIST_WARNING, VAR_UINT8  | MASTER_VALUE, .config.minmaxUnsigned = { 0, FENCE_WARNING_MARGIN_MAX_M }, PG_FENCE_CONFIG, offsetof(fenceConfig_t, distanceWarningM) },
+    { PARAM_NAME_FENCE_BRAKE_ANGLE,  VAR_UINT8  | MASTER_VALUE, .config.minmaxUnsigned = { FENCE_BRAKE_ANGLE_MIN_DEG, FENCE_BRAKE_ANGLE_MAX_DEG }, PG_FENCE_CONFIG, offsetof(fenceConfig_t, brakeAngleDeg) },
 #endif
 
 // PG_MODE_ACTIVATION_CONFIG

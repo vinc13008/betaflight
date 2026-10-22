@@ -28,6 +28,7 @@
 
 #include "build/debug.h"
 
+#include "common/filter.h"
 #include "common/maths.h"
 #include "common/vector.h"
 
@@ -41,6 +42,7 @@
 #include "flight/failsafe.h"
 #include "flight/flight_plan_nav.h"
 #include "flight/imu.h"
+#include "flight/pid.h"
 #include "flight/pos_hold.h"
 #include "flight/position.h"
 #include "flight/position_estimator.h"
@@ -67,9 +69,15 @@
 #define FENCE_ALT_RATE_I_LIMIT          0.15f
 #define FENCE_ALT_RATE_I_DECAY          2.0f        // 1/s: the integral bleeds away once the pilot is below the cap again
 #define FENCE_ALT_TARGET_MARGIN_CM      200.0f      // autopilot altitude targets stay this far below the ceiling
+#define FENCE_ALT_CAP_LPF_HZ            10.0f       // smooths the cap's 100 Hz steps and the climb rate noise it follows
+
+// Throttle handover: the fence eases the throttle over to alt hold when it takes the aircraft,
+// and back to the pilot's stick when it hands it back, rather than stepping it
+#define FENCE_TAKEOVER_TIME_S           0.3f
+#define FENCE_HANDBACK_TIME_S           1.0f
 
 // Radius
-#define FENCE_DIST_BRAKE_DECEL_CMSS     400.0f      // horizontal deceleration position hold is counted on for
+#define FENCE_DIST_BRAKE_EFFICIENCY     0.5f        // of g * tan(brake angle), the deceleration the braking is counted on for
 #define FENCE_DIST_RETURN_MARGIN_MIN_M  10          // the return point is at least this far inside the radius
 #define FENCE_DIST_STOPPED_SPEED_CMS    100.0f      // braking is over below this ground speed
 #define FENCE_DIST_BRAKING_TIMEOUT_US   5000000     // ...or after this long
@@ -97,6 +105,14 @@ typedef struct fenceState_s {
     float throttleCap;
     float throttleCapI;
     bool throttleCapped;            // the mixer has applied the cap since the last update
+    pt1Filter_t throttleCapLpf;     // the cap as the mixer applies it, at loop rate
+
+    // throttle handover, at loop rate
+    bool handoverOwned;             // fenceOwnsFlight() as the mixer last saw it
+    float handoverFromThrottle;     // the throttle as it stood when the handover started
+    float handoverProgress;         // 0..1 through the handover, 1 = done
+    float handoverTimeS;
+    float throttleOut;              // the throttle last handed to the mixer
 
     // radius
     bool distanceValid;
@@ -123,6 +139,9 @@ const char * const fenceModeNames[FENCE_MODE_COUNT] = {
 void fenceInit(void)
 {
     memset(&fence, 0, sizeof(fence));
+    pt1FilterInit(&fence.throttleCapLpf, pt1FilterGain(FENCE_ALT_CAP_LPF_HZ, pidGetDT()));
+    fence.throttleCapLpf.state = 1.0f;
+    fence.handoverProgress = 1.0f;
 }
 
 // The fastest the aircraft may climb altitudeCm high and still stop at the ceiling, and
@@ -138,11 +157,23 @@ STATIC_UNIT_TESTED float fenceAllowedClimbRateCmS(float altitudeCm, float ceilin
     return fminf(sqrtf(2.0f * FENCE_ALT_BRAKE_DECEL_CMSS * marginCm), marginCm * FENCE_ALT_POSITION_GAIN);
 }
 
-// How far from home the aircraft would come to rest if position hold braked it now
-STATIC_UNIT_TESTED float fenceStopDistanceCm(float distanceCm, float radialSpeedCmS)
+// How far from home the aircraft would come to rest if position hold braked it now at decelCmSS
+STATIC_UNIT_TESTED float fenceStopDistanceCm(float distanceCm, float radialSpeedCmS, float decelCmSS)
 {
     const float outwardCmS = fmaxf(radialSpeedCmS, 0.0f);
-    return distanceCm + sq(outwardCmS) / (2.0f * FENCE_DIST_BRAKE_DECEL_CMSS);
+    return distanceCm + sq(outwardCmS) / (2.0f * decelCmSS);
+}
+
+static float brakeAngleDeg(void)
+{
+    // bounded below too: a zero angle would plan on never stopping
+    return constrain(MIN(fenceConfig()->brakeAngleDeg, autopilotConfig()->maxAngle), FENCE_BRAKE_ANGLE_MIN_DEG, FENCE_BRAKE_ANGLE_MAX_DEG);
+}
+
+// The deceleration braking at the brake angle is counted on for, cm/s^2
+static float brakeDecelCmSS(void)
+{
+    return FENCE_DIST_BRAKE_EFFICIENCY * G_ACCELERATION * 100.0f * tan_approx(DEGREES_TO_RADIANS(brakeAngleDeg()));
 }
 
 static float returnRadiusCm(const fenceConfig_t *cfg)
@@ -281,7 +312,7 @@ static void updateReturn(timeUs_t currentTimeUs)
     // Position hold flies the return, with alt hold under it
     const bool canFly = fence.distanceValid && fence.altitudeValid && posHoldReady();
     const bool allowed = enforced && !deferred && canFly;
-    const bool breach = fence.distanceValid && fenceStopDistanceCm(fence.distanceCm, fence.radialSpeedCmS) >= limitCm;
+    const bool breach = fence.distanceValid && fenceStopDistanceCm(fence.distanceCm, fence.radialSpeedCmS, brakeDecelCmSS()) >= limitCm;
     // Position hold has been given the aircraft but is not flying it (its own sanity checks tripped)
     const bool controlLost = fence.returnState != FENCE_RETURN_IDLE
         && cmpTimeUs(currentTimeUs, fence.engagedUs) > FENCE_DIST_ENGAGE_GRACE_US
@@ -362,7 +393,7 @@ void fenceUpdate(timeUs_t currentTimeUs)
     DEBUG_SET(DEBUG_FENCE, 0, fence.returnState);                                   //!< Return State [enum:fenceReturnState_e]
     DEBUG_SET(DEBUG_FENCE, 1, lrintf(fence.distanceCm * 0.01f));                    //!< Distance From Home [unit:m]
     DEBUG_SET(DEBUG_FENCE, 2, lrintf(fence.radialSpeedCmS));                        //!< Speed Away From Home [unit:cm/s]
-    DEBUG_SET(DEBUG_FENCE, 3, lrintf(fenceStopDistanceCm(fence.distanceCm, fence.radialSpeedCmS) * 0.01f)); //!< Stopping Distance From Home [unit:m]
+    DEBUG_SET(DEBUG_FENCE, 3, lrintf(fenceStopDistanceCm(fence.distanceCm, fence.radialSpeedCmS, brakeDecelCmSS()) * 0.01f)); //!< Stopping Distance From Home [unit:m]
     DEBUG_SET(DEBUG_FENCE, 4, lrintf(fence.altitudeCm * 0.1f));                     //!< Altitude [unit:0.1m]
     DEBUG_SET(DEBUG_FENCE, 5, lrintf(fence.allowedClimbRateCmS));                   //!< Allowed Climb Rate [unit:cm/s]
     DEBUG_SET(DEBUG_FENCE, 6, lrintf((fence.throttleCapActive ? fence.throttleCap : 1.0f) * 1000.0f)); //!< Throttle Cap [unit:0.001]
@@ -383,11 +414,42 @@ bool fenceIsReadyToArm(void)
     return true;
 }
 
+float fenceHandoverThrottle(float throttle)
+{
+    if (!ARMING_FLAG(ARMED)) {
+        fence.handoverOwned = false;
+        fence.handoverProgress = 1.0f;
+        fence.throttleOut = throttle;
+        return throttle;
+    }
+
+    const bool owned = fenceOwnsFlight();
+    if (owned != fence.handoverOwned) {
+        // From wherever the throttle stands, so a handover cut short by another starts from where it got to
+        fence.handoverOwned = owned;
+        fence.handoverFromThrottle = fence.throttleOut;
+        fence.handoverProgress = 0.0f;
+        fence.handoverTimeS = owned ? FENCE_TAKEOVER_TIME_S : FENCE_HANDBACK_TIME_S;
+    }
+    if (fence.handoverProgress < 1.0f) {
+        fence.handoverProgress = fminf(fence.handoverProgress + pidGetDT() / fence.handoverTimeS, 1.0f);
+        throttle = fence.handoverFromThrottle + (throttle - fence.handoverFromThrottle) * fence.handoverProgress;
+    }
+    fence.throttleOut = throttle;
+    return throttle;
+}
+
 float fenceLimitThrottle(float throttle)
 {
-    if (fence.throttleCapActive && throttle > fence.throttleCap) {
+    if (!fence.throttleCapActive) {
+        // The cap eases in from no cap, and lets go at once
+        fence.throttleCapLpf.state = 1.0f;
+        return throttle;
+    }
+    const float cap = pt1FilterApply(&fence.throttleCapLpf, fence.throttleCap);
+    if (throttle > cap) {
         fence.throttleCapped = true;
-        return fence.throttleCap;
+        return cap;
     }
     return throttle;
 }
@@ -414,6 +476,11 @@ bool fenceOwnsFlight(void)
 bool fenceOwnsPosition(void)
 {
     return fence.returnState == FENCE_RETURN_BRAKING || fence.returnState == FENCE_RETURN_FLYING;
+}
+
+float fenceGetMaxAngleDeg(void)
+{
+    return fenceOwnsPosition() ? brakeAngleDeg() : 0.0f;
 }
 
 uint16_t fenceGetDistanceLimitM(void)

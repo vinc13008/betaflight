@@ -1412,6 +1412,12 @@ bool positionControl(void)
     if (ap.navActive && positionNavGetActiveCommand()->maxAngleDeg > 0.0f) {
         maxAngle = fminf(maxAngle, positionNavGetActiveCommand()->maxAngleDeg);
     }
+#ifdef USE_FENCE
+    // The fence brakes and flies back no steeper than its brake angle
+    if (fenceGetMaxAngleDeg() > 0.0f) {
+        maxAngle = fminf(maxAngle, fenceGetMaxAngleDeg());
+    }
+#endif
     const float mag = vector2Norm(&angleV);
     wasAngleSaturated = (mag > maxAngle);
     if (mag > maxAngle && mag > 0.001f) {

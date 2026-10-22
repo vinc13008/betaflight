@@ -1627,6 +1627,7 @@ def scenario_geofence_rth_rxloss(sitl, rc, fdm):
 
 FENCE_DIST_M = 60
 FENCE_ALT_M = 20
+FENCE_BRAKE_ANGLE_DEG = 30
 
 
 def scenario_fence_distance(sitl, rc, fdm):
@@ -1645,17 +1646,30 @@ def scenario_fence_distance(sitl, rc, fdm):
         timeout=60,
     )
     engaged_m = fdm.distance_from_home()
+    engaged_alt_m = fdm.model.pos[2]
     log(f"fence engaged {engaged_m:.1f} m out, debug {sitl.debug_values()[:4]}")
     assert engaged_m < FENCE_DIST_M, f"fence engaged only {engaged_m:.1f} m out"
     rc.set(2, 1300)     # throttle back into the alt-hold deadband
 
-    # the stick is still held forward: the return ignores it
-    wait_for(
-        "flown back inside the return point",
-        lambda: fdm.distance_from_home() < FENCE_DIST_M - 8,
-        timeout=60,
-        interval=0.5,
-    )
+    # The stick is still held forward: the return ignores it. Once the forward lean the
+    # pilot had is levelled out, the brake and the way back lean no further than the brake
+    # angle, and the throttle eased over to alt hold costs little height.
+    t_engaged = time.monotonic()
+    max_tilt_deg = 0.0
+    min_alt_m = engaged_alt_m
+    deadline = t_engaged + 60.0
+    while fdm.distance_from_home() >= FENCE_DIST_M - 8:
+        assert time.monotonic() < deadline, "timeout waiting for: flown back inside the return point"
+        if time.monotonic() - t_engaged > 1.0:
+            roll, pitch = sitl.attitude()
+            max_tilt_deg = max(max_tilt_deg, abs(roll), abs(pitch))
+        if time.monotonic() - t_engaged < 3.0:
+            min_alt_m = min(min_alt_m, fdm.model.pos[2])
+        time.sleep(0.1)
+    log(f"ok: flown back inside the return point, steepest lean {max_tilt_deg:.0f} deg, "
+        f"height {engaged_alt_m:.1f} -> {min_alt_m:.1f} m over the takeover")
+    assert max_tilt_deg < FENCE_BRAKE_ANGLE_DEG + 8, f"leant {max_tilt_deg:.0f} deg against a {FENCE_BRAKE_ANGLE_DEG} deg brake angle"
+    assert engaged_alt_m - min_alt_m < 2.0, f"dropped {engaged_alt_m - min_alt_m:.1f} m as the fence took over"
     rc.set(1, RC_MID)   # centre the sticks: the pilot takes it back
     wait_for(
         "handed back (POSHOLD released)",

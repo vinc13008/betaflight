@@ -30,6 +30,8 @@
 #define FENCE_DISTANCE_MIN_M        20
 #define FENCE_DISTANCE_MAX_M        10000
 #define FENCE_WARNING_MARGIN_MAX_M  100
+#define FENCE_BRAKE_ANGLE_MIN_DEG   10
+#define FENCE_BRAKE_ANGLE_MAX_DEG   60
 
 // What a fence does about the limit it guards
 typedef enum {
@@ -46,6 +48,7 @@ typedef struct fenceConfig_s {
     uint8_t distanceMode;           // fenceMode_e
     uint16_t maxDistanceM;          // horizontal radius around home, metres
     uint8_t distanceWarningM;       // warn this far inside the radius, and return at least this far inside it, metres
+    uint8_t brakeAngleDeg;          // steepest the aircraft is leant to brake and fly back, degrees (never past ap_max_angle)
 } fenceConfig_t;
 
 PG_DECLARE(fenceConfig_t, fenceConfig);

@@ -275,6 +275,7 @@ encoding_unittest_SRC := \
 fence_unittest_SRC := \
 		$(USER_DIR)/flight/fence.c \
 		$(USER_DIR)/pg/fence.c \
+		$(USER_DIR)/common/filter.c \
 		$(USER_DIR)/common/maths.c \
 		$(USER_DIR)/common/vector.c
 

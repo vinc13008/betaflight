@@ -833,8 +833,9 @@ FAST_CODE_NOINLINE_CRITICAL void mixTable(timeUs_t currentTimeUs)
 #endif
 
 #ifdef USE_FENCE
-    // Last word on the throttle, whoever set it: the altitude ceiling only ever lowers it
-    throttle = fenceLimitThrottle(throttle);
+    // Last word on the throttle, whoever set it: eased across the fence taking the aircraft
+    // and handing it back, then capped under the altitude ceiling, which only ever lowers it
+    throttle = fenceLimitThrottle(fenceHandoverThrottle(throttle));
 #endif
 
 #if defined(USE_WING) && defined(USE_LAUNCH_WING)
